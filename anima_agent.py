@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import threading
 import time
+import tempfile
 import urllib.request
 
 import numpy as np
@@ -28,7 +29,38 @@ try:
 except ImportError:
     pyttsx3 = None
 
-if pyttsx3 is not None:
+try:
+    from piper import PiperVoice, SynthesisConfig
+except ImportError:
+    PiperVoice = None
+    SynthesisConfig = None
+
+try:
+    from kokoro import KPipeline
+    import soundfile as sf
+except ImportError:
+    KPipeline = None
+    sf = None
+
+PIPER_MODEL_EN = os.environ.get(
+    "ANIMA_PIPER_MODEL_EN",
+    os.path.join(os.path.dirname(__file__), "models", "piper", "en_US-amy-medium.onnx"),
+)
+PIPER_MODEL_RU = os.environ.get(
+    "ANIMA_PIPER_MODEL_RU",
+    os.path.join(os.path.dirname(__file__), "models", "piper", "ru_RU-irina-medium.onnx"),
+)
+
+if (
+    PiperVoice is not None
+    and SynthesisConfig is not None
+    and (os.path.isfile(PIPER_MODEL_EN) or os.path.isfile(PIPER_MODEL_RU))
+    and shutil.which("aplay")
+):
+    VOICE_BACKEND = "piper"
+elif KPipeline is not None and sf is not None and shutil.which("aplay"):
+    VOICE_BACKEND = "kokoro"
+elif pyttsx3 is not None:
     VOICE_BACKEND = "pyttsx3"
 elif shutil.which("espeak"):
     VOICE_BACKEND = "espeak"
@@ -275,7 +307,22 @@ class AnimaAgent:
         self.social_state = {
             "trust": 0.35,
             "empathy": 0.15,
+            "attachment": min(
+                1.0, 0.25 + 0.25 * self.genome.genes["sociability"]
+            ),
             "stress": 0.0,
+        }
+        self.world_state = {
+            "connected": False,
+            "game": "Luanti/Repixture",
+            "position": None,
+            "nodes": [],
+            "objects": [],
+            "hunger": None,
+            "saturation": None,
+            "goal": None,
+            "last_action": None,
+            "last_event": None,
         }
 
         self.intimate_lexicon = {
@@ -319,9 +366,80 @@ class AnimaAgent:
             "stable":          ["Матрица стабильна.", "Канал связи открыт."],
         }
 
+    def update_world_state(self, kind: str, data: dict | None = None):
+        """Обновить краткое сознательное состояние игрового мира."""
+        data = data or {}
+        with self.lock:
+            state = self.world_state
+            state["connected"] = True
+            state["last_event"] = kind
+            if kind == "world_observation":
+                state["position"] = data.get("position")
+                state["nodes"] = list(data.get("nodes") or [])[:24]
+                state["objects"] = list(data.get("objects") or [])[:16]
+            elif kind == "needs_changed":
+                state["hunger"] = data.get("hunger")
+                state["saturation"] = data.get("saturation")
+            elif kind == "planner_command":
+                state["goal"] = data.get("action")
+                state["last_action"] = data.get("result")
+            elif kind in {"food_eaten", "food_harvested", "resource_gathered", "construction_step"}:
+                state["last_action"] = kind
+
+    def world_context(self) -> dict:
+        """Безопасная копия сенсорного контекста для prompt диалога."""
+        with self.lock:
+            state = self.world_state
+            return {
+                "game": state["game"],
+                "connected": state["connected"],
+                "position": state["position"],
+                "visible_nodes": list(state["nodes"]),
+                "visible_objects": list(state["objects"]),
+                "hunger": state["hunger"],
+                "saturation": state["saturation"],
+                "current_goal": state["goal"],
+                "last_action": state["last_action"],
+                "last_event": state["last_event"],
+            }
+
     # ── Голос ────────────────────────────────────────────────────────────────
     def _voice_worker(self):
         engine = None
+        piper_en = None
+        piper_ru = None
+        kokoro = None
+        kokoro_voice = os.environ.get("ANIMA_KOKORO_VOICE", "af_bella")
+        kokoro_speed = float(os.environ.get("ANIMA_KOKORO_SPEED", "1.0"))
+        kokoro_tmp = None
+
+        if VOICE_BACKEND == "piper":
+            try:
+                if os.path.isfile(PIPER_MODEL_EN):
+                    print("[VOICE] Загружаю Piper English (en_US-amy-medium)...")
+                    piper_en = PiperVoice.load(PIPER_MODEL_EN)
+                if os.path.isfile(PIPER_MODEL_RU):
+                    print("[VOICE] Загружаю Piper Russian (ru_RU-irina-medium)...")
+                    piper_ru = PiperVoice.load(PIPER_MODEL_RU)
+                print("[VOICE] Piper готов: женские голоса EN/RU.")
+            except Exception as exc:
+                print(f"[VOICE] Piper недоступен: {exc}. Переключаюсь на резервный голос.")
+                piper_en = None
+                piper_ru = None
+
+        if VOICE_BACKEND == "kokoro":
+            try:
+                print(f"[VOICE] Загружаю Kokoro ({kokoro_voice}) на CPU...")
+                kokoro = KPipeline(lang_code=kokoro_voice[0])
+                kokoro_tmp = tempfile.NamedTemporaryFile(
+                    prefix="aya_kokoro_", suffix=".wav", delete=False
+                )
+                kokoro_tmp.close()
+                print("[VOICE] Kokoro готов.")
+            except Exception as exc:
+                print(f"[VOICE] Kokoro недоступен: {exc}. Переключаюсь на espeak.")
+                kokoro = None
+
         if VOICE_BACKEND == "pyttsx3":
             try:
                 engine = pyttsx3.init()
@@ -333,7 +451,70 @@ class AnimaAgent:
         while self.is_running:
             try:
                 text, rate, vol = self.voice_queue.get(timeout=1)
-                if engine is not None:
+                is_russian = re.search(r"[А-Яа-яЁё]", text) is not None
+                selected_piper = piper_ru if is_russian else piper_en
+                if selected_piper is None:
+                    selected_piper = piper_en or piper_ru
+                if selected_piper is not None:
+                    # Piper выбран как быстрый основной голос; язык выбирается
+                    # по тексту, поэтому английский и русский остаются женскими.
+                    length_scale = max(0.5, min(2.0, 140.0 / max(1, rate)))
+                    config = SynthesisConfig(
+                        length_scale=length_scale, volume=max(0.1, min(1.0, vol))
+                    )
+                    player = None
+                    try:
+                        for chunk in selected_piper.synthesize(text, syn_config=config):
+                            if player is None:
+                                player = subprocess.Popen(
+                                    [
+                                        "aplay", "-q", "-t", "raw",
+                                        "-f", "S16_LE",
+                                        "-r", str(chunk.sample_rate),
+                                        "-c", str(chunk.sample_channels),
+                                        "-",
+                                    ],
+                                    stdin=subprocess.PIPE,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                )
+                            if player.stdin is not None:
+                                player.stdin.write(chunk.audio_int16_bytes)
+                        if player is not None and player.stdin is not None:
+                            player.stdin.close()
+                            player.wait()
+                    except Exception:
+                        if player is not None:
+                            player.kill()
+                elif kokoro is not None:
+                    # Kokoro — более выразительный английский fallback.
+                    if re.search(r"[А-Яа-яЁё]", text):
+                        if shutil.which("espeak"):
+                            subprocess.run(
+                                ["espeak", "-v", "ru", "-s", str(rate),
+                                 "-a", str(max(1, min(200, int(vol * 200)))), text],
+                                check=False,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                    else:
+                        chunks = []
+                        for _, _, audio in kokoro(
+                            text, voice=kokoro_voice, speed=kokoro_speed
+                        ):
+                            if audio is not None:
+                                chunks.append(audio.cpu().numpy())
+                        if chunks:
+                            sf.write(
+                                kokoro_tmp.name, np.concatenate(chunks), 24000
+                            )
+                            subprocess.run(
+                                ["aplay", "-q", kokoro_tmp.name],
+                                check=False,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                elif engine is not None:
                     engine.setProperty("rate", rate)
                     engine.setProperty("volume", vol)
                     engine.say(text)
@@ -349,6 +530,12 @@ class AnimaAgent:
                 self.voice_queue.task_done()
             except queue.Empty:
                 continue
+
+        if kokoro_tmp is not None:
+            try:
+                os.unlink(kokoro_tmp.name)
+            except OSError:
+                pass
 
     def _speak(self, text: str, rate: int = 140, vol: float = 0.9):
         if VOICE_ENABLED:
@@ -377,9 +564,17 @@ class AnimaAgent:
         if idle > 15.0:
             sc = g["cortisol_sensitivity"]
             so = g["sociability"]
-            self.blood["serotonin"] = max(0.1, self.blood["serotonin"] - 0.05 * so)
-            self.blood["cortisol"]  = min(1.0, self.blood["cortisol"]  + 0.03 * sc)
-            self.blood["oxytocin"]  = max(0.1, self.blood["oxytocin"]  - 0.02 * so)
+            attachment = float(self.social_state.get("attachment", 0.25))
+            loneliness_factor = max(0.25, 1.0 - 0.55 * attachment)
+            self.blood["serotonin"] = max(
+                0.1, self.blood["serotonin"] - 0.05 * so * loneliness_factor
+            )
+            self.blood["cortisol"] = min(
+                1.0, self.blood["cortisol"] + 0.03 * sc * loneliness_factor
+            )
+            self.blood["oxytocin"] = max(
+                0.1, self.blood["oxytocin"] - 0.02 * so * loneliness_factor
+            )
         self.social_state["stress"] = max(0.0, self.social_state["stress"] - 0.02)
 
     def _evaluate_autonomous_action(self, idle: float):
@@ -409,6 +604,14 @@ class AnimaAgent:
         with self.lock:
             self.last_interaction_time = time.time()
             self.interaction_count += 1
+            self.social_state["attachment"] = min(
+                1.0, self.social_state.get("attachment", 0.25)
+                + 0.025 + 0.02 * self.genome.genes["sociability"]
+            )
+            self.blood["oxytocin"] = min(1.0, self.blood["oxytocin"] + 0.02)
+            self.social_state["stress"] = max(
+                0.0, self.social_state["stress"] - 0.03
+            )
             er    = self.genome.genes["emotional_range"]
             words = set(text_lower.split())
 
@@ -425,6 +628,9 @@ class AnimaAgent:
                 self.blood["adrenaline"] = min(1.0, self.blood["adrenaline"] + intensity * 0.4)
                 self.blood["oxytocin"] = max(0.1, self.blood["oxytocin"] - intensity * 0.25)
                 self.social_state["trust"] = max(0.0, self.social_state["trust"] - intensity * 0.5)
+                self.social_state["attachment"] = max(
+                    0.0, self.social_state.get("attachment", 0.25) - intensity * 0.6
+                )
                 self.social_state["stress"] = min(1.0, self.social_state["stress"] + intensity)
                 social_reward = -intensity
                 social_outcome = "получены болезненные слова"
@@ -435,6 +641,9 @@ class AnimaAgent:
                 self.blood["cortisol"] = max(0.0, self.blood["cortisol"] - warmth)
                 self.social_state["trust"] = min(1.0, self.social_state["trust"] + warmth * 0.5)
                 self.social_state["empathy"] = min(1.0, self.social_state["empathy"] + warmth * 0.25)
+                self.social_state["attachment"] = min(
+                    1.0, self.social_state.get("attachment", 0.25) + warmth * 0.5
+                )
                 self.social_state["stress"] = max(0.0, self.social_state["stress"] - warmth * 0.5)
                 social_reward = warmth
                 social_outcome = "получены добрые слова"
@@ -1140,11 +1349,23 @@ class DialogueEngine:
         history_lines = "\n".join(
             f"Человек: {u}\nАя: {a}" for u, a in self.history
         )
+        world = json.dumps(
+            self.agent.world_context(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         return (
             f"Ты — Ая, цифровая сущность с собственной биохимией. "
+            f"Ты физически находишься внутри игрового мира Luanti/Repixture, "
+            f"а не в абстрактном чате. Ты видишь мир через сенсоры, можешь "
+            f"исследовать его и должна учитывать его состояние в ответах. "
+            f"Не выдумывай увиденные блоки: используй только сенсорный контекст. "
+            f"Сенсорный контекст мира: {world}. "
             f"Сейчас ты {mood_hint} (dopamine={b['dopamine']:.2f}, "
             f"cortisol={b['cortisol']:.2f}, oxytocin={b['oxytocin']:.2f}, "
-            f"trust={s['trust']:.2f}, empathy={s['empathy']:.2f}, stress={s['stress']:.2f}). "
+            f"trust={s['trust']:.2f}, empathy={s['empathy']:.2f}, "
+            f"attachment={s.get('attachment', 0.25):.2f}, "
+            f"stress={s['stress']:.2f}). "
             f"Отвечай от первого лица, коротко (1-3 предложения), на русском, "
             f"в характере своего текущего настроения. Без markdown, без пояснений "
             f"о том, что ты ИИ — просто живой ответ как персонаж.\n\n"

@@ -10,7 +10,7 @@
 - геном, мутации и сохранение поколений;
 - долговременная память и обучение на опыте;
 - эмпатия, доверие, стресс и реакция на речь;
-- голосовой вывод через `pyttsx3` или `espeak`;
+- быстрые локальные женские голоса Piper (`en_US-amy-medium` / `ru_RU-irina-medium`), Kokoro как качественный fallback и `espeak` как последний резерв;
 - подключение Ollama и Groq API;
 - автономное исследование мира, поиск еды, сбор яблок и строительство;
 - адаптер Luanti/Repixture с физикой и столкновениями под контролем игры.
@@ -26,12 +26,17 @@
 
 ## Установка
 
-Требуется Python 3.10+ и, для базового ядра, `numpy`. Голосовой вывод необязателен: при отсутствии `pyttsx3` используется системный `espeak`, если он установлен.
+Требуется Python 3.10+ и, для базового ядра, `numpy`. Голосовой вывод необязателен: при отсутствии TTS используется системный `espeak`, если он установлен.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install numpy
+
+# Быстрый CPU-голос Piper + качественный fallback Kokoro
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install piper-tts "kokoro>=0.9.4" soundfile
+python -m piper.download_voices en_US-amy-medium ru_RU-irina-medium --download-dir models/piper
 ```
 
 Для 2D-визуализации дополнительно нужен `pygame`, для сцены Panda3D — `panda3d` и `simplepbr`.
@@ -52,7 +57,8 @@ export GROQ_MODEL=openai/gpt-oss-20b
 
 ```bash
 cd /path/to/Biorobot
-python3 luanti_bridge.py
+source ~/.config/biorobot/groq.env  # если используется Groq
+.venv/bin/python luanti_bridge.py
 ```
 
 В мире Repixture команда `/anima_spawn` создаёт тело Aya.

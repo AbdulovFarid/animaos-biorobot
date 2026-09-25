@@ -21,6 +21,8 @@ DEFAULT_LOG = "/home/fargo/.var/app/org.luanti.luanti/.minetest/debug.txt"
 EVENT_MARKER = "[anima_event]"
 COMMAND_PATH = os.environ.get("AYA_COMMAND_PATH", "/tmp/aya_command.json")
 PLANNER_INTERVAL = 12.0
+HUMAN_CONTACT_DURATION = 20.0
+SOCIAL_COMMAND_INTERVAL = 3.0
 PLANNER_ACTIONS = {"explore", "seek_food", "build", "rest", "move_to"}
 PLANNER_EVENTS = {
     "world_observation",
@@ -65,31 +67,114 @@ class WorldPlanner:
         self.last_plan_at = 0.0
         self.last_action = None
         self.last_action_at = 0.0
+        self.human_contact_until = 0.0
+        self.last_social_command_at = 0.0
+        self.human_name = None
         self.state = {
             "position": None,
             "nodes": [],
+            "objects": [],
             "hunger": None,
             "saturation": None,
             "last_event": None,
             "last_event_data": {},
+            "human_name": None,
+            "human_position": None,
+            "human_contact_until": 0.0,
         }
+
+    @staticmethod
+    def _normalize_position(position: object) -> dict | None:
+        if not isinstance(position, dict):
+            return None
+        try:
+            return {
+                "x": int(round(float(position["x"]))),
+                "y": int(round(float(position["y"]))),
+                "z": int(round(float(position["z"]))),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _player_target(cls, objects: list, player_name: str | None = None) -> dict | None:
+        candidates = [
+            item for item in (objects or [])
+            if isinstance(item, dict) and item.get("kind") == "player"
+        ]
+        if player_name:
+            candidates = (
+                [item for item in candidates if item.get("name") == player_name]
+                + [item for item in candidates if item.get("name") != player_name]
+            )
+        for item in candidates:
+            target = cls._normalize_position(item.get("position"))
+            if target:
+                return target
+        return None
 
     def consider(self, event: dict) -> None:
         kind = event.get("kind")
         data = event.get("data") or {}
+        now = time.time()
+        social_command = None
+
         with self.lock:
             self.state["last_event"] = kind
             self.state["last_event_data"] = data
             if kind == "world_observation":
                 self.state["position"] = data.get("position")
                 self.state["nodes"] = list(data.get("nodes") or [])[:24]
+                self.state["objects"] = list(data.get("objects") or [])[:16]
+                if self.human_contact_until > now:
+                    target = self._player_target(
+                        self.state["objects"], self.human_name
+                    )
+                    if target:
+                        self.state["human_position"] = target
+                        if now - self.last_social_command_at >= SOCIAL_COMMAND_INTERVAL:
+                            social_command = {
+                                "action": "socialize",
+                                "player": self.human_name or "singleplayer",
+                                "target": target,
+                                "duration": HUMAN_CONTACT_DURATION,
+                                "reason": "human_contact_priority",
+                            }
             elif kind == "needs_changed":
                 self.state["hunger"] = data.get("hunger")
                 self.state["saturation"] = data.get("saturation")
+            elif kind == "chat":
+                self.human_name = str(data.get("name") or "singleplayer")
+                self.human_contact_until = now + HUMAN_CONTACT_DURATION
+                self.state["human_name"] = self.human_name
+                self.state["human_contact_until"] = self.human_contact_until
+                target = (
+                    self._normalize_position(data.get("position"))
+                    or self._player_target(self.state["objects"], self.human_name)
+                )
+                self.state["human_position"] = target
+                if target:
+                    social_command = {
+                        "action": "socialize",
+                        "player": self.human_name,
+                        "target": target,
+                        "duration": HUMAN_CONTACT_DURATION,
+                        "reason": "human_contact_priority",
+                    }
+
+        if social_command:
+            self.last_social_command_at = now
+            self.last_plan_at = now
+            self._write_command(social_command)
+            return
+
+        # Чат не должен запускать обычный выбор explore/build: контакт с человеком
+        # имеет приоритет даже если LLM-планировщик занят или недавно планировал.
+        if kind == "chat":
+            return
 
         if kind not in PLANNER_EVENTS or self.busy:
             return
-        now = time.time()
         if now - self.last_plan_at < PLANNER_INTERVAL:
             return
         if self.last_action and now - self.last_action_at < PLANNER_INTERVAL:
@@ -138,7 +223,8 @@ class WorldPlanner:
         if not os.getenv("GROQ_API_KEY"):
             return None
         system = (
-            "Ты — планировщик действий Aya в мире Luanti. "
+            "Ты — планировщик действий Aya, которая действительно находится "
+            "в физическом мире Luanti/Repixture и получает сенсорные данные. "
             "Выбери ровно одну следующую цель. Не пиши код и не объясняй решение. "
             "Разрешены только JSON-действия: "
             "{\"action\":\"explore\"}, "
@@ -148,6 +234,8 @@ class WorldPlanner:
             "{\"action\":\"move_to\",\"target\":{\"x\":0,\"y\":0,\"z\":0}}. "
             "Цель: сначала поддерживать жизнь и исследовать мир, "
             "затем собирать ресурсы и постепенно строить жильё. "
+            "Учитывай visible_objects: player — человек, entity — животное или другой моб. "
+            "Не путай видимые объекты с блоками и не утверждай, что видишь кого-то, если список пуст. "
             "Если данных мало, выбирай explore. "
             "Ответь строго одним JSON-объектом."
         )
@@ -215,6 +303,16 @@ class WorldPlanner:
     def _fallback(snapshot: dict) -> dict:
         hunger = snapshot.get("hunger")
         nodes = set(snapshot.get("nodes") or [])
+        contact_until = float(snapshot.get("human_contact_until") or 0.0)
+        human_position = snapshot.get("human_position")
+        if contact_until > time.time() and human_position:
+            return {
+                "action": "socialize",
+                "player": snapshot.get("human_name") or "singleplayer",
+                "target": human_position,
+                "duration": HUMAN_CONTACT_DURATION,
+                "reason": "human_contact_priority",
+            }
         if hunger is not None and float(hunger) < 8:
             return {"action": "seek_food", "reason": "low_hunger_fallback"}
         if snapshot.get("last_event") == "obstacle":
@@ -224,6 +322,13 @@ class WorldPlanner:
         return {"action": "explore", "reason": "default_fallback"}
 
     def _write_command(self, command: dict) -> None:
+        # A planner worker can finish after a chat event. Never let that
+        # stale result overwrite the active human-contact command.
+        with self.lock:
+            contact_active = self.human_contact_until > time.time()
+        if contact_active and command.get("action") != "socialize":
+            print("[PLANNER] action skipped: human_contact_priority")
+            return
         temporary = f"{self.command_path}.{os.getpid()}.tmp"
         try:
             with open(temporary, "w", encoding="utf-8") as handle:
@@ -242,6 +347,7 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
 
     kind = event.get("kind")
     data = event.get("data") or {}
+    agent.update_world_state(kind, data)
 
     if kind == "chat":
         text = str(data.get("text", "")).strip()
@@ -305,11 +411,19 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
         )
     elif kind == "world_observation":
         nodes = data.get("nodes") or []
+        objects = data.get("objects") or []
         node_summary = ", ".join(str(node) for node in nodes[:12])
+        object_summary = ", ".join(
+            f"{item.get('kind', 'object')}:{item.get('name', 'unknown')} "
+            f"на расстоянии {item.get('distance', '?')}"
+            for item in objects[:8]
+            if isinstance(item, dict)
+        )
+        summaries = [part for part in (node_summary, object_summary) if part]
         agent.learn_from_experience(
             stimulus="новая клетка мира",
             action="наблюдать и запоминать",
-            outcome=node_summary or "окружение осмотрено",
+            outcome="; ".join(summaries) or "окружение осмотрено",
             reward=0.05,
             details=data,
         )
@@ -318,6 +432,12 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
                 node_summary,
                 source="исследование мира",
                 nourishment=0.02,
+            )
+        if object_summary:
+            agent.receive_information(
+                object_summary,
+                source="наблюдение за объектами мира",
+                nourishment=0.03,
             )
 
 
