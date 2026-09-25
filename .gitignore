@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# IDE and local settings
+.idea/
+.vscode/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime state and personal memory
+vault/
+*.log
+*.tmp
+
+# Blender backup files
+*.blend1
+
+# OS files
+.DS_Store
