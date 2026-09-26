@@ -1,74 +1,74 @@
 # Biorobot / AnimaOS
 
-Экспериментальный проект автономного AI-агента Aya (Ani), который живёт в игровом мире и развивается через память, биохимию, эмоции и взаимодействие с окружающей средой.
+An experimental project featuring an autonomous AI agent named Aya (Ani) that lives in a game world and evolves through memory, biochemistry, emotions, and environmental interaction.
 
-Проект разделяет когнитивное ядро агента и игровой адаптер. Благодаря этому личность и память можно переносить между разными мирами и игровыми средами.
+The project decouples the agent's cognitive core from the game adapter. This allows the agent's personality and memory to be transferred between different worlds and game environments.
 
-## Возможности
+## Features
 
-- биохимическая модель: дофамин, серотонин, окситоцин, кортизол, адреналин и аденозин;
-- геном, мутации и сохранение поколений;
-- долговременная память и обучение на опыте;
-- эмпатия, доверие, стресс и реакция на речь;
-- быстрые локальные женские голоса Piper (`en_US-amy-medium` / `ru_RU-irina-medium`), Kokoro как качественный fallback и `espeak` как последний резерв;
-- подключение Ollama и Groq API;
-- автономное исследование мира, поиск еды, сбор яблок и строительство;
-- адаптер Luanti/Repixture с физикой и столкновениями под контролем игры.
+- biochemical model: dopamine, serotonin, oxytocin, cortisol, adrenaline, and adenosine;
+- genome, mutations, and generational persistence;
+- long-term memory and experiential learning;
+- empathy, trust, stress, and speech response;
+- fast local female voices: Piper (`en_US-amy-medium` / `ru_RU-irina-medium`), Kokoro as a high-quality fallback, and `espeak` as a final backup;
+- Ollama and Groq API integration;
+- autonomous world exploration, foraging, apple gathering, and building;
+- Luanti/Repixture adapter with game-controlled physics and collision handling.
 
-## Архитектура
+## Architecture
 
-- `anima_agent.py` — когнитивное ядро, биохимия, память, диалог и эволюция;
-- `luanti_bridge.py` — мост между ядром и журналом Luanti, включая планировщик целей;
-- `anima_world.py` — отдельная 2D-визуализация мира;
-- `main_Panda.py` — экспериментальная сцена Panda3D;
-- `assets/models/` — модели и текстуры Aya;
-- `world/` — игровые компоненты экспериментального мира.
+- `anima_agent.py` — cognitive core, biochemistry, memory, dialogue, and evolution;
+- `luanti_bridge.py` — bridge between the core and the Luanti log, including a goal planner;
+- `anima_world.py` — separate 2D world visualization;
+- `main_Panda.py` — experimental Panda3D scene;
+- `assets/models/` — Aya's models and textures;
+- `world/` — game components of the experimental world.
 
-## Установка
+## Installation
 
-Требуется Python 3.10+ и, для базового ядра, `numpy`. Голосовой вывод необязателен: при отсутствии TTS используется системный `espeak`, если он установлен.
+Requires Python 3.10+ and, for the core functionality, `numpy`. Voice output is optional; if TTS is missing, the system's `espeak` is used (if installed).
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install numpy
 
-# Быстрый CPU-голос Piper + качественный fallback Kokoro
+# Fast CPU-based Piper voice + high-quality Kokoro fallback
 pip install --index-url https://download.pytorch.org/whl/cpu torch
 pip install piper-tts "kokoro>=0.9.4" soundfile
 python -m piper.download_voices en_US-amy-medium ru_RU-irina-medium --download-dir models/piper
 ```
 
-Для 2D-визуализации дополнительно нужен `pygame`, для сцены Panda3D — `panda3d` и `simplepbr`.
+2D visualization requires `pygame`, while the Panda3D scene requires `panda3d` and `simplepbr`.
 
-## Подключение Groq
+## Connecting Groq
 
-Ключ не хранится в проекте. Перед запуском задайте его только в окружении:
+The key is not stored in the project. Set it in your environment before launching:
 
 ```bash
-export GROQ_API_KEY=ваш_ключ
+export GROQ_API_KEY=your_key
 export ANIMA_LLM_PROVIDER=groq
 export GROQ_MODEL=openai/gpt-oss-20b
 ```
 
-Локальный Ollama остаётся резервным провайдером. Никогда не добавляйте API-ключ в Git.
+Local Ollama remains the fallback provider. Never commit the API key to Git.
 
-## Запуск моста Luanti
+## Launching the Luanti Bridge
 
 ```bash
 cd /path/to/Biorobot
-source ~/.config/biorobot/groq.env  # если используется Groq
+source ~/.config/biorobot/groq.env  # if using Groq
 .venv/bin/python luanti_bridge.py
 ```
 
-В мире Repixture команда `/anima_spawn` создаёт тело Aya.
+In the Repixture world, the `/anima_spawn` command creates Aya's body.
 
-Основные команды: `/anima_auto on`, `/anima_explore on`, `/anima_build start`, `/anima_hunger`, `/anima_memory`.
+Key commands: `/anima_auto on`, `/anima_explore on`, `/anima_build start`, `/anima_hunger`, `/anima_memory`.
 
-## Память и приватные данные
+## Memory and Private Data
 
-Файлы в `vault/` содержат состояние и личную память Aya. Они намеренно исключены из Git и должны оставаться локальными.
+Files in `vault/` contain Aya's state and personal memory. They are intentionally excluded from Git and must remain local.
 
-## Статус
+## Status
 
-Проект находится в активной разработке. API и игровые механики могут меняться.
+The project is under active development. APIs and game mechanics are subject to change.
