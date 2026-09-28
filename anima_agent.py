@@ -156,6 +156,7 @@ class LearningMemory:
 
     VERSION = 1
     MAX_EPISODES = 500
+    MAX_KNOWLEDGE = 300
 
     def __init__(self, path: str):
         self.path = path
@@ -169,21 +170,48 @@ class LearningMemory:
             if isinstance(data, dict) and data.get("version") == self.VERSION:
                 data.setdefault("episodes", [])
                 data.setdefault("associations", {})
+                data.setdefault("concepts", {})
+                data.setdefault("knowledge", [])
                 return data
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             pass
-        return {"version": self.VERSION, "episodes": [], "associations": {}}
+        return {
+            "version": self.VERSION,
+            "episodes": [],
+            "associations": {},
+            "concepts": {},
+            "knowledge": [],
+        }
 
     @staticmethod
     def _key(stimulus: str, action: str) -> str:
         return f"{stimulus.strip().lower()}::{action.strip().lower()}"
 
     def _save(self) -> None:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        temporary = self.path + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(self.data, handle, ensure_ascii=False, indent=2)
-        os.replace(temporary, self.path)
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=directory,
+                prefix=f".{os.path.basename(self.path)}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = handle.name
+                json.dump(self.data, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+            temporary = None
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
 
     def observe(
         self,
@@ -232,17 +260,129 @@ class LearningMemory:
             association = self.data["associations"].get(self._key(stimulus, action))
             return float(association["value"]) if association else 0.0
 
+    def recall(self, query: str = "", limit: int = 5) -> list[dict]:
+        """Вернуть наиболее близкий недавний опыт для текущей ситуации."""
+        limit = max(1, min(12, int(limit)))
+        tokens = set(re.findall(r"[^\W_]+", str(query).casefold(), flags=re.UNICODE))
+        with self.lock:
+            episodes = list(self.data.get("episodes", []))
+        ranked = []
+        for index, episode in enumerate(reversed(episodes)):
+            text = " ".join(
+                str(episode.get(key, ""))
+                for key in ("stimulus", "action", "outcome")
+            ).casefold()
+            score = sum(1 for token in tokens if token in text) if tokens else 0
+            recency = index / max(1, len(episodes))
+            ranked.append((score, -recency, episode))
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [dict(item[2]) for item in ranked[:limit]]
+
+    def consolidate(self) -> int:
+        """Сжать эпизодический опыт в устойчивые понятия и навыки."""
+        with self.lock:
+            concepts = {}
+            for association in self.data.get("associations", {}).values():
+                if float(association.get("confidence", 0.0)) < 0.2:
+                    continue
+                concept = str(association.get("stimulus", "")).strip()
+                if not concept:
+                    continue
+                concepts[concept] = {
+                    "preferred_action": association.get("action"),
+                    "value": round(float(association.get("value", 0.0)), 4),
+                    "confidence": round(float(association.get("confidence", 0.0)), 4),
+                    "attempts": int(association.get("attempts", 0)),
+                    "last_outcome": association.get("last_outcome"),
+                }
+            self.data["concepts"] = concepts
+            self._save()
+            return len(concepts)
+
+    def remember_knowledge(
+        self,
+        statement: str,
+        source: str = "человек",
+        confidence: float = 0.85,
+        topic: str = "",
+    ) -> dict | None:
+        """Сохранить знание отдельно от непроверенного ответа LLM."""
+        statement = " ".join(str(statement).split()).strip()
+        if not statement:
+            return None
+        confidence = max(0.0, min(1.0, float(confidence)))
+        now = time.time()
+        normalized = statement.casefold()
+        with self.lock:
+            knowledge = self.data.setdefault("knowledge", [])
+            for item in reversed(knowledge):
+                if str(item.get("statement", "")).casefold() == normalized:
+                    item["last_seen"] = now
+                    item["seen_count"] = int(item.get("seen_count", 1)) + 1
+                    item["confidence"] = max(
+                        float(item.get("confidence", 0.0)), confidence
+                    )
+                    self._save()
+                    return dict(item)
+            record = {
+                "statement": statement,
+                "source": str(source),
+                "topic": str(topic),
+                "confidence": round(confidence, 4),
+                "verified": False,
+                "seen_count": 1,
+                "first_seen": now,
+                "last_seen": now,
+            }
+            knowledge.append(record)
+            self.data["knowledge"] = knowledge[-self.MAX_KNOWLEDGE:]
+            self._save()
+            return dict(record)
+
+    def recall_knowledge(self, query: str = "", limit: int = 5) -> list[dict]:
+        """Вернуть подходящие записи, сохраняя их источник и уверенность."""
+        limit = max(1, min(12, int(limit)))
+        tokens = set(re.findall(r"[^\W_]+", str(query).casefold(), flags=re.UNICODE))
+        with self.lock:
+            knowledge = list(self.data.get("knowledge", []))
+        ranked = []
+        for index, item in enumerate(reversed(knowledge)):
+            text = " ".join(
+                str(item.get(key, ""))
+                for key in ("statement", "topic", "source")
+            ).casefold()
+            score = sum(1 for token in tokens if token in text) if tokens else 0
+            recency = index / max(1, len(knowledge))
+            ranked.append((score, -recency, item))
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [dict(item[2]) for item in ranked[:limit]]
+
     def stats(self) -> dict:
         with self.lock:
             return {
                 "episodes": len(self.data["episodes"]),
                 "associations": len(self.data["associations"]),
+                "concepts": len(self.data.get("concepts", {})),
+                "knowledge": len(self.data.get("knowledge", [])),
             }
 
 
 # =============================================================================
 #  ГЕНЕТИЧЕСКИЙ ДВИЖОК (GENOME)
 # =============================================================================
+
+def extract_memory_request(text: str) -> str | None:
+    """Распознать явную просьбу человека сохранить знание."""
+    match = re.match(
+        r"^\s*(?:запомни|запиши|сохрани|учти|remember)\b\s*[,:-]?\s*(?:(?:что|that)\s*)?[,:-]?\s*(.+?)\s*$",
+        str(text),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    statement = " ".join(match.group(1).split()).strip(" .,;:!?")
+    return statement or None
+
 
 class Genome:
     GENE_KEYS = [
@@ -312,6 +452,32 @@ class AnimaAgent:
             ),
             "stress": 0.0,
         }
+        self.self_model_state = {
+            "identity": self.name,
+            "role": "воплощённый автономный агент",
+            "generation": self.generation,
+            "continuity": 0.0,
+            "confidence": 0.35,
+            "known_capabilities": [
+                "наблюдать", "двигаться", "есть", "собирать",
+                "строить", "общаться", "учиться",
+            ],
+            "known_places": [],
+            "last_reflection": "Я просыпаюсь в новом цикле и продолжаю свой опыт.",
+            "last_consolidation": None,
+        }
+        self.goal_state = {
+            "active": "наблюдать",
+            "reason": "начало непрерывного опыта",
+            "confidence": 0.25,
+            "source": "system",
+            "subgoals": [],
+            "since": time.time(),
+        }
+        self.motives = {}
+        self._known_world_signatures = set()
+        self._last_consolidation_at = 0.0
+
         self.world_state = {
             "connected": False,
             "game": "Luanti/Repixture",
@@ -319,11 +485,23 @@ class AnimaAgent:
             "nodes": [],
             "objects": [],
             "hunger": None,
+            "hunger_max": 20,
             "saturation": None,
+            "night": False,
+            "storm": False,
+            "sheltered": False,
+            "near_player": False,
+            "touching_player": False,
+            "protected": False,
+            "safety_mode": None,
+            "novelty": 0.0,
+            "observations": 0,
+            "known_landmarks": [],
             "goal": None,
             "last_action": None,
             "last_event": None,
         }
+        self._refresh_motives_locked()
 
         self.intimate_lexicon = {
             "love", "touch", "feel", "want", "desire",
@@ -344,8 +522,8 @@ class AnimaAgent:
         if VOICE_ENABLED:
             threading.Thread(target=self._voice_worker, daemon=True).start()
 
-        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
         self._evolver = SafeEvolver(self)
+        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
         self._dialogue = None  # создаётся лениво при первом chat()
 
         print(f"\n{'='*60}")
@@ -366,6 +544,171 @@ class AnimaAgent:
             "stable":          ["Матрица стабильна.", "Канал связи открыт."],
         }
 
+    @staticmethod
+    def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
+        return float(max(low, min(high, value)))
+
+    def _refresh_motives_locked(self) -> None:
+        """Рассчитать конкурирующие мотивы из мира и биохимии."""
+        state = self.world_state
+        hunger = state.get("hunger")
+        hunger_max = max(1.0, float(state.get("hunger_max") or 20.0))
+        hunger_deficit = 0.0
+        if hunger is not None:
+            hunger_deficit = self._clip(1.0 - float(hunger) / hunger_max)
+        cortisol = float(self.blood.get("cortisol", 0.0))
+        adrenaline = float(self.blood.get("adrenaline", 0.0))
+        adenosine = float(self.blood.get("adenosine", 0.0))
+        oxytocin = float(self.blood.get("oxytocin", 0.0))
+        stress = float(self.social_state.get("stress", 0.0))
+        safety = cortisol * 0.7 + adrenaline * 0.35 + stress * 0.25
+        if (state.get("night") or state.get("storm")) and not state.get("protected"):
+            safety += 0.35
+        if state.get("safety_mode"):
+            safety += 0.2
+        attachment_need = 0.0 if state.get("near_player") else (
+            0.25 + 0.45 * oxytocin + 0.2 * float(self.social_state.get("attachment", 0.25))
+        )
+        novelty = float(state.get("novelty", 0.0))
+        curiosity = 0.35 + novelty * 0.55 - safety * 0.3
+        construction = 0.35 + (0.35 if self.goal_state.get("active") == "build" else 0.0)
+        self.motives = {
+            "safety": round(self._clip(safety), 4),
+            "energy": round(self._clip(hunger_deficit * 0.8 + adenosine * 0.25), 4),
+            "rest": round(self._clip(adenosine), 4),
+            "attachment": round(self._clip(attachment_need), 4),
+            "curiosity": round(self._clip(curiosity), 4),
+            "construction": round(self._clip(construction), 4),
+        }
+        self.self_model_state["confidence"] = round(
+            self._clip(0.25 + 0.08 * min(8, state.get("observations", 0))), 4
+        )
+
+    def _recommended_goal_locked(self) -> dict:
+        state = self.world_state
+        if state.get("safety_mode") == "shelter":
+            action, reason = "seek_shelter", "ночь или дождь"
+        elif state.get("safety_mode") == "player":
+            action, reason = "follow_player", "рядом с человеком безопаснее"
+        else:
+            priorities = {
+                "seek_food": (self.motives.get("energy", 0.0), "восстановить энергию"),
+                "rest": (self.motives.get("rest", 0.0), "снизить аденозин"),
+                "socialize": (self.motives.get("attachment", 0.0), "поддержать связь"),
+                "build": (self.motives.get("construction", 0.0), "создать устойчивое место"),
+                "explore": (self.motives.get("curiosity", 0.0), "получить новую информацию"),
+            }
+            action, reason = max(priorities, key=lambda key: priorities[key][0]), None
+            reason = priorities[action][1]
+        motive_key = {
+            "seek_food": "energy",
+            "rest": "rest",
+            "socialize": "attachment",
+            "build": "construction",
+            "explore": "curiosity",
+        }.get(action, "safety")
+        value = float(self.motives.get(motive_key, 0.0))
+        return {
+            "action": action,
+            "reason": reason,
+            "confidence": round(self._clip(0.35 + value * 0.55), 4),
+        }
+
+    def set_goal(
+        self,
+        action: str,
+        reason: str = "",
+        confidence: float = 0.5,
+        source: str = "system",
+        subgoals: list | None = None,
+    ) -> dict:
+        with self.lock:
+            self.goal_state = {
+                "active": str(action),
+                "reason": str(reason),
+                "confidence": round(self._clip(float(confidence)), 4),
+                "source": str(source),
+                "subgoals": list(subgoals or []),
+                "since": time.time(),
+            }
+            self.world_state["goal"] = str(action)
+            self._refresh_motives_locked()
+            return dict(self.goal_state)
+
+    def _register_world_observation_locked(self, data: dict) -> None:
+        nodes = sorted(set(str(node) for node in (data.get("nodes") or [])))
+        objects = sorted(
+            f"{item.get('kind', 'object')}:{item.get('name', 'unknown')}"
+            for item in (data.get("objects") or [])
+            if isinstance(item, dict)
+        )
+        position = data.get("position") or {}
+        cell = {
+            "x": int(round(float(position.get("x", 0)))),
+            "y": int(round(float(position.get("y", 0)))),
+            "z": int(round(float(position.get("z", 0)))),
+        }
+        signature = json.dumps({"cell": cell, "nodes": nodes, "objects": objects}, sort_keys=True)
+        is_new = signature not in self._known_world_signatures
+        self._known_world_signatures.add(signature)
+        if len(self._known_world_signatures) > 512:
+            self._known_world_signatures.pop()
+        self.world_state["novelty"] = 1.0 if is_new else 0.08
+        self.world_state["observations"] = int(self.world_state.get("observations", 0)) + 1
+        landmark_tags = []
+        for node in nodes:
+            lowered = node.casefold()
+            if any(token in lowered for token in ("tree", "apple", "water", "river", "lake")):
+                landmark_tags.append(node)
+        if landmark_tags:
+            landmarks = list(self.world_state.get("known_landmarks", []))
+            entry = {"position": cell, "features": landmark_tags, "seen_at": time.time()}
+            landmarks.append(entry)
+            self.world_state["known_landmarks"] = landmarks[-24:]
+            self.self_model_state["known_places"] = landmarks[-12:]
+
+    def recommended_goal(self) -> dict:
+        with self.lock:
+            self._refresh_motives_locked()
+            return self._recommended_goal_locked()
+
+    def consolidate_memory(self, reason: str = "rest") -> int:
+        now = time.time()
+        with self.lock:
+            if now - self._last_consolidation_at < 45.0:
+                return 0
+            self._last_consolidation_at = now
+            self.self_model_state["last_consolidation"] = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(now)
+            )
+        count = self.learning.consolidate()
+        with self.lock:
+            self.evolution_log.append(f"Консолидация памяти: {reason}, понятий {count}.")
+            self.self_model_state["continuity"] = self._clip(
+                float(self.self_model_state.get("continuity", 0.0)) + 0.04
+            )
+        print(f"[MEMORY] {self.name}: consolidated {count} concepts ({reason})")
+        return count
+
+    def reflect(self) -> dict:
+        with self.lock:
+            self._refresh_motives_locked()
+            snapshot = {
+                "self": dict(self.self_model_state),
+                "motives": dict(self.motives),
+                "goal": dict(self.goal_state),
+                "recommended_goal": self._recommended_goal_locked(),
+                "biochemistry": {key: round(float(value), 3) for key, value in self.blood.items()},
+                "social": {key: round(float(value), 3) for key, value in self.social_state.items()},
+            }
+        goal_query = "{} {}".format(
+            snapshot["goal"].get("active", ""),
+            snapshot["goal"].get("reason", ""),
+        )
+        snapshot["memories"] = self.learning.recall(goal_query, limit=5)
+        snapshot["memory_stats"] = self.learning.stats()
+        return snapshot
+
     def update_world_state(self, kind: str, data: dict | None = None):
         """Обновить краткое сознательное состояние игрового мира."""
         data = data or {}
@@ -377,14 +720,27 @@ class AnimaAgent:
                 state["position"] = data.get("position")
                 state["nodes"] = list(data.get("nodes") or [])[:24]
                 state["objects"] = list(data.get("objects") or [])[:16]
+                self._register_world_observation_locked(data)
             elif kind == "needs_changed":
                 state["hunger"] = data.get("hunger")
+                state["hunger_max"] = data.get("hunger_max", state.get("hunger_max", 20))
                 state["saturation"] = data.get("saturation")
+            elif kind == "safety_state":
+                state["night"] = bool(data.get("night"))
+                state["storm"] = bool(data.get("storm"))
+                state["sheltered"] = bool(data.get("sheltered"))
+                state["near_player"] = bool(data.get("near_player"))
+                state["touching_player"] = bool(data.get("touching_player"))
+                state["protected"] = bool(data.get("protected"))
+                state["safety_mode"] = data.get("mode")
             elif kind == "planner_command":
                 state["goal"] = data.get("action")
                 state["last_action"] = data.get("result")
+                self.goal_state["active"] = data.get("action") or self.goal_state.get("active")
+                self.goal_state["reason"] = data.get("result") or self.goal_state.get("reason")
             elif kind in {"food_eaten", "food_harvested", "resource_gathered", "construction_step"}:
                 state["last_action"] = kind
+            self._refresh_motives_locked()
 
     def world_context(self) -> dict:
         """Безопасная копия сенсорного контекста для prompt диалога."""
@@ -398,6 +754,13 @@ class AnimaAgent:
                 "visible_objects": list(state["objects"]),
                 "hunger": state["hunger"],
                 "saturation": state["saturation"],
+                "night": state["night"],
+                "storm": state["storm"],
+                "sheltered": state["sheltered"],
+                "near_player": state["near_player"],
+                "touching_player": state["touching_player"],
+                "protected": state["protected"],
+                "safety_mode": state["safety_mode"],
                 "current_goal": state["goal"],
                 "last_action": state["last_action"],
                 "last_event": state["last_event"],
@@ -551,6 +914,12 @@ class AnimaAgent:
                 self._metabolize()
                 idle = time.time() - self.last_interaction_time
                 self._evaluate_autonomous_action(idle)
+                should_consolidate = bool(
+                    (self.world_state.get("night") and self.world_state.get("sheltered"))
+                    or self.blood.get("adenosine", 0.0) > 0.82
+                )
+            if should_consolidate:
+                self.consolidate_memory("ночной отдых и восстановление")
             self._evolver.tick()
 
     def _metabolize(self):
@@ -676,6 +1045,34 @@ class AnimaAgent:
                 self.blood["cortisol"] = min(1.0, self.blood["cortisol"] + abs(reward) * 0.2)
         return association
 
+    def remember_knowledge(
+        self,
+        statement: str,
+        source: str = "человек",
+        confidence: float = 0.9,
+        topic: str = "",
+    ) -> dict | None:
+        """Сохранить знание с явным источником, не выдавая его за проверенный факт."""
+        record = self.learning.remember_knowledge(
+            statement,
+            source=source,
+            confidence=confidence,
+            topic=topic,
+        )
+        if record:
+            self.receive_information(
+                record["statement"],
+                source=f"память ({record['source']})",
+                nourishment=0.04,
+            )
+            print(
+                f"[KNOWLEDGE] {self.name} запомнила: "
+                f"{record['statement']} "
+                f"(источник={record['source']}, "
+                f"уверенность={record['confidence']:.2f})"
+            )
+        return record
+
     def receive_information(
         self,
         text: str = "",
@@ -746,6 +1143,14 @@ class AnimaAgent:
         ответ готов (может занять 10-60 сек на CPU). Не блокирует heartbeat.
         """
         self.receive_input(text)
+        memory_request = extract_memory_request(text)
+        if memory_request:
+            self.remember_knowledge(
+                memory_request,
+                source="человек",
+                confidence=0.9,
+                topic="сообщение человека",
+            )
         if self._dialogue is None:
             self._dialogue = DialogueEngine(self)
         threading.Thread(
@@ -792,6 +1197,9 @@ class AnimaAgent:
             "evolution_log": self.evolution_log[-10:],
             "learning_stats": self.learning.stats(),
             "social_state":  self.social_state.copy(),
+            "self_model":    self.self_model_state.copy(),
+            "goal_state":    self.goal_state.copy(),
+            "motives":       self.motives.copy(),
         }
 
 
@@ -1349,6 +1757,17 @@ class DialogueEngine:
         history_lines = "\n".join(
             f"Человек: {u}\nАя: {a}" for u, a in self.history
         )
+        knowledge = self.agent.learning.recall_knowledge(user_text, limit=5)
+        if knowledge:
+            knowledge_lines = "\n".join(
+                f"- {item['statement']} "
+                f"(источник: {item['source']}, "
+                f"уверенность: {float(item.get('confidence', 0.0)):.2f}, "
+                f"подтверждено: {bool(item.get('verified', False))})"
+                for item in knowledge
+            )
+        else:
+            knowledge_lines = "Подходящих сохранённых знаний пока нет."
         world = json.dumps(
             self.agent.world_context(),
             ensure_ascii=False,
@@ -1361,6 +1780,12 @@ class DialogueEngine:
             f"исследовать его и должна учитывать его состояние в ответах. "
             f"Не выдумывай увиденные блоки: используй только сенсорный контекст. "
             f"Сенсорный контекст мира: {world}. "
+            f"Сохранённые знания по теме (у них всегда указан источник): "
+            f"{knowledge_lines}. "
+            f"Учи человека: не отвечай только 'я знаю' — объясняй мысль, "
+            f"причину и простой пример. Если данных недостаточно, честно скажи "
+            f"'я не знаю точно' и отдели предположение от факта. Не называй "
+            f"неподтверждённую запись проверенной истиной. "
             f"Сейчас ты {mood_hint} (dopamine={b['dopamine']:.2f}, "
             f"cortisol={b['cortisol']:.2f}, oxytocin={b['oxytocin']:.2f}, "
             f"trust={s['trust']:.2f}, empathy={s['empathy']:.2f}, "
@@ -1482,6 +1907,15 @@ class GenomeEncoder:
         agent.interaction_count = data.get("interactions", 0)
         agent.evolution_log     = data.get("evolution_log", ["Resurrected."])
         agent.social_state.update(data.get("social_state", {}))
+        agent.blood.update({
+            key: float(value)
+            for key, value in (data.get("final_blood", {}) or {}).items()
+            if key in agent.blood
+        })
+        agent.self_model_state.update(data.get("self_model", {}))
+        agent.goal_state.update(data.get("goal_state", {}))
+        with agent.lock:
+            agent._refresh_motives_locked()
         return agent
 
     @staticmethod

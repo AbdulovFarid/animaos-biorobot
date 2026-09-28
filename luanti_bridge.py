@@ -24,6 +24,43 @@ PLANNER_INTERVAL = 12.0
 HUMAN_CONTACT_DURATION = 20.0
 SOCIAL_COMMAND_INTERVAL = 3.0
 PLANNER_ACTIONS = {"explore", "seek_food", "build", "rest", "move_to"}
+
+BRIDGE_LOCK_PATH = os.environ.get("AYA_BRIDGE_LOCK_PATH", "/tmp/aya_bridge.lock")
+GAME_HEARTBEAT_PATH = os.environ.get(
+    "AYA_GAME_HEARTBEAT_PATH", "/tmp/aya_luanti_heartbeat"
+)
+
+
+def acquire_bridge_lock():
+    """Не допускает второй экземпляр моста и повторную озвучку."""
+    try:
+        import fcntl
+        handle = open(BRIDGE_LOCK_PATH, "w", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+    except BlockingIOError:
+        try:
+            handle.close()
+        except UnboundLocalError:
+            pass
+        print("[BRIDGE] Уже запущен другой экземпляр; второй запуск отменён.")
+        return None
+    except OSError as exc:
+        print(f"[BRIDGE] Не удалось создать lock-файл: {exc}")
+        return None
+
+
+def release_bridge_lock(handle):
+    if handle is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
+
 PLANNER_EVENTS = {
     "world_observation",
     "needs_changed",
@@ -76,6 +113,13 @@ class WorldPlanner:
             "objects": [],
             "hunger": None,
             "saturation": None,
+            "night": False,
+            "storm": False,
+            "sheltered": False,
+            "near_player": False,
+            "touching_player": False,
+            "protected": False,
+            "safety_mode": None,
             "last_event": None,
             "last_event_data": {},
             "human_name": None,
@@ -143,6 +187,14 @@ class WorldPlanner:
             elif kind == "needs_changed":
                 self.state["hunger"] = data.get("hunger")
                 self.state["saturation"] = data.get("saturation")
+            elif kind == "safety_state":
+                self.state["night"] = bool(data.get("night"))
+                self.state["storm"] = bool(data.get("storm"))
+                self.state["sheltered"] = bool(data.get("sheltered"))
+                self.state["near_player"] = bool(data.get("near_player"))
+                self.state["touching_player"] = bool(data.get("touching_player"))
+                self.state["protected"] = bool(data.get("protected"))
+                self.state["safety_mode"] = data.get("mode")
             elif kind == "chat":
                 self.human_name = str(data.get("name") or "singleplayer")
                 self.human_contact_until = now + HUMAN_CONTACT_DURATION
@@ -299,12 +351,12 @@ class WorldPlanner:
             return None
         return {"action": "move_to", "target": target, "reason": "groq_plan"}
 
-    @staticmethod
-    def _fallback(snapshot: dict) -> dict:
+    def _fallback(self, snapshot: dict) -> dict:
         hunger = snapshot.get("hunger")
         nodes = set(snapshot.get("nodes") or [])
         contact_until = float(snapshot.get("human_contact_until") or 0.0)
         human_position = snapshot.get("human_position")
+        internal_recommendation = self.agent.recommended_goal()
         if contact_until > time.time() and human_position:
             return {
                 "action": "socialize",
@@ -315,6 +367,21 @@ class WorldPlanner:
             }
         if hunger is not None and float(hunger) < 8:
             return {"action": "seek_food", "reason": "low_hunger_fallback"}
+        recommended_action = internal_recommendation.get("action")
+        if recommended_action == "seek_food":
+            return {"action": "seek_food", "reason": "biochemistry_energy_motive"}
+        if recommended_action == "build":
+            return {"action": "build", "reason": "construction_motive"}
+        if recommended_action == "follow_player" and human_position:
+            return {
+                "action": "socialize",
+                "player": snapshot.get("human_name") or "singleplayer",
+                "target": human_position,
+                "duration": HUMAN_CONTACT_DURATION,
+                "reason": "attachment_motive",
+            }
+        if recommended_action == "rest":
+            return {"action": "rest", "reason": "adenosine_rest_motive"}
         if snapshot.get("last_event") == "obstacle":
             return {"action": "explore", "reason": "obstacle_fallback"}
         if any("tree" in node for node in nodes):
@@ -349,11 +416,16 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
     data = event.get("data") or {}
     agent.update_world_state(kind, data)
 
-    if kind == "chat":
+    if kind == "reflection_request":
+        reflection = agent.reflect()
+        print("[REFLECTION] " + json.dumps(reflection, ensure_ascii=False, separators=(",", ":")))
+    elif kind == "chat":
         text = str(data.get("text", "")).strip()
         if text:
+            agent.set_goal("human_contact", "человек обратился к Aya", 0.9, "human")
             agent.chat(text)
     elif kind == "food_eaten":
+        agent.set_goal("recover_energy", "еда доступна и усвоена", 0.85, "experience")
         agent.learn_from_experience(
             stimulus="еда в игровом мире",
             action="есть",
@@ -362,6 +434,7 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
             details=data,
         )
     elif kind == "food_harvested":
+        agent.set_goal("seek_food", "найден съедобный ресурс", 0.8, "experience")
         agent.learn_from_experience(
             stimulus="яблоко растёт на дереве",
             action="смотреть вверх и собирать",
@@ -369,11 +442,111 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
             reward=0.9,
             details=data,
         )
+    elif kind == "safety_state":
+        night = bool(data.get("night"))
+        storm = bool(data.get("storm"))
+        sheltered = bool(data.get("sheltered"))
+        near_player = bool(data.get("near_player"))
+        touching_player = bool(data.get("touching_player"))
+        protected = bool(data.get("protected"))
+        mode = data.get("mode")
+        if mode == "shelter":
+            agent.set_goal("seek_shelter", "ночь или дождь требуют защиты", 0.9, "homeostasis")
+        elif mode == "player":
+            agent.set_goal("follow_player", "рядом с игроком безопаснее", 0.85, "attachment")
+        elif touching_player:
+            agent.set_goal("socialize", "контакт с игроком поддерживает связь", 0.8, "attachment")
+        safety_key = (
+            night, storm, sheltered, near_player, touching_player,
+            protected, mode,
+        )
+        previous_key = getattr(agent, "_last_safety_state_key", None)
+        agent._last_safety_state_key = safety_key
+
+        with agent.lock:
+            if protected:
+                calm = 0.07 if sheltered else 0.05
+                agent.blood["cortisol"] = max(
+                    0.0, float(agent.blood.get("cortisol", 0.0)) - calm
+                )
+                agent.social_state["stress"] = max(
+                    0.0, float(agent.social_state.get("stress", 0.0)) - calm * 0.6
+                )
+                agent.blood["serotonin"] = min(
+                    1.0, float(agent.blood.get("serotonin", 0.0)) + 0.025
+                )
+            elif night or storm:
+                threat = 0.035 if storm else 0.03
+                agent.blood["cortisol"] = min(
+                    1.0, float(agent.blood.get("cortisol", 0.0)) + threat
+                )
+                agent.social_state["stress"] = min(
+                    1.0, float(agent.social_state.get("stress", 0.0)) + threat * 0.7
+                )
+
+            if near_player:
+                agent.blood["oxytocin"] = min(
+                    1.0, float(agent.blood.get("oxytocin", 0.0)) + 0.025
+                )
+                agent.blood["dopamine"] = min(
+                    1.0, float(agent.blood.get("dopamine", 0.0)) + 0.02
+                )
+
+            if touching_player:
+                agent.blood["oxytocin"] = min(
+                    1.0, float(agent.blood.get("oxytocin", 0.0)) + 0.08
+                )
+                agent.blood["dopamine"] = min(
+                    1.0, float(agent.blood.get("dopamine", 0.0)) + 0.08
+                )
+                agent.blood["serotonin"] = min(
+                    1.0, float(agent.blood.get("serotonin", 0.0)) + 0.04
+                )
+                agent.blood["cortisol"] = max(
+                    0.0, float(agent.blood.get("cortisol", 0.0)) - 0.12
+                )
+                agent.social_state["attachment"] = min(
+                    1.0, float(agent.social_state.get("attachment", 0.0)) + 0.04
+                )
+                agent.social_state["stress"] = max(
+                    0.0, float(agent.social_state.get("stress", 0.0)) - 0.08
+                )
+
+        if previous_key != safety_key:
+            if sheltered:
+                action = "оставаться в укрытии"
+                outcome = "дом защищает от ночи или дождя"
+                reward = 0.25
+            elif touching_player:
+                action = "приблизиться к игроку"
+                outcome = "контакт с игроком успокоил Aya"
+                reward = 0.35
+            elif near_player:
+                action = "держаться рядом с игроком"
+                outcome = "рядом с игроком безопаснее"
+                reward = 0.2
+            elif mode == "shelter":
+                action = "искать укрытие"
+                outcome = "ночь или дождь требуют защиты"
+                reward = -0.1
+            else:
+                action = "исследовать безопасную зону"
+                outcome = "условия спокойные"
+                reward = 0.05
+            agent.learn_from_experience(
+                stimulus="ночь, дождь и близость к человеку",
+                action=action,
+                outcome=outcome,
+                reward=reward,
+                details=data,
+            )
     elif kind == "needs_changed":
         hunger = float(data.get("hunger", 0.0))
         hunger_max = max(1.0, float(data.get("hunger_max", 20.0)))
         deficit = max(0.0, min(1.0, 1.0 - hunger / hunger_max))
         if deficit > 0.0:
+            if deficit > 0.35:
+                agent.set_goal("seek_food", "энергия снижается", min(0.95, 0.45 + deficit), "homeostasis")
             with agent.lock:
                 agent.blood["cortisol"] = min(
                     1.0, agent.blood["cortisol"] + 0.04 * deficit
@@ -394,6 +567,7 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
             source=str(data.get("source", "игровой мир")),
         )
     elif kind == "obstacle":
+        agent.set_goal("replan", "препятствие нарушило маршрут", 0.75, "experience")
         agent.learn_from_experience(
             stimulus="препятствие на маршруте",
             action="обойти",
@@ -402,6 +576,12 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
             details=data,
         )
     elif kind == "planner_command":
+        agent.set_goal(
+            str(data.get("action", "unknown")),
+            str(data.get("reason", data.get("result", "planner"))),
+            0.65 if data.get("success") else 0.35,
+            "planner",
+        )
         agent.learn_from_experience(
             stimulus="планировщик выбрал действие",
             action=str(data.get("action", "неизвестно")),
@@ -409,6 +589,27 @@ def handle_event(agent: AnimaAgent, event: dict, planner: WorldPlanner | None = 
             reward=0.05 if data.get("success") else -0.05,
             details=data,
         )
+    elif kind == "resource_gathered":
+        agent.set_goal("build", "ресурс добыт для будущего дома", 0.8, "construction")
+        agent.learn_from_experience(
+            stimulus="найден строительный ресурс",
+            action="собирать и возвращаться к плану",
+            outcome="ресурс добавлен в запас",
+            reward=0.7,
+            details=data,
+        )
+    elif kind == "construction_step":
+        agent.set_goal("build", "дом строится по плану", 0.9, "construction")
+        agent.learn_from_experience(
+            stimulus="строительный план",
+            action="строить следующий блок",
+            outcome="блок установлен",
+            reward=0.25,
+            details=data,
+        )
+    elif kind == "build_completed":
+        agent.set_goal("rest", "дом завершён, можно восстановиться", 0.75, "construction")
+        agent.consolidate_memory("завершение строительства")
     elif kind == "world_observation":
         nodes = data.get("nodes") or []
         objects = data.get("objects") or []
@@ -445,6 +646,15 @@ def run(log_path: str) -> None:
     agent = load_agent()
     planner = WorldPlanner(agent)
     stopping = False
+    bridge_started_at = time.time()
+    last_heartbeat_seen_at = bridge_started_at
+    last_heartbeat_mtime = None
+    heartbeat_grace_period = float(
+        os.environ.get("AYA_HEARTBEAT_GRACE_PERIOD", "30")
+    )
+    heartbeat_timeout = float(
+        os.environ.get("AYA_HEARTBEAT_TIMEOUT", "15")
+    )
 
     def stop_bridge(signum, frame):
         nonlocal stopping
@@ -459,12 +669,38 @@ def run(log_path: str) -> None:
     with open(log_path, "r", encoding="utf-8", errors="replace") as log:
         log.seek(0, os.SEEK_END)
         while not stopping:
+            now = time.time()
+            try:
+                heartbeat_mtime = os.path.getmtime(GAME_HEARTBEAT_PATH)
+            except OSError:
+                heartbeat_mtime = None
+            if (
+                heartbeat_mtime is not None
+                and (
+                    last_heartbeat_mtime is None
+                    or heartbeat_mtime > last_heartbeat_mtime
+                )
+            ):
+                last_heartbeat_mtime = heartbeat_mtime
+                last_heartbeat_seen_at = now
+            if (
+                now - bridge_started_at > heartbeat_grace_period
+                and now - last_heartbeat_seen_at > heartbeat_timeout
+            ):
+                print("[BRIDGE] Heartbeat Luanti потерян; мост завершает работу.")
+                stopping = True
+                break
+
             line = log.readline()
             if not line:
                 time.sleep(0.25)
                 continue
             event = parse_event(line)
             if event:
+                if event.get("kind") == "world_shutdown":
+                    print("[BRIDGE] Luanti закрывается; мост завершает работу.")
+                    stopping = True
+                    break
                 handle_event(agent, event, planner)
 
     agent.stop()
@@ -473,4 +709,9 @@ def run(log_path: str) -> None:
 
 
 if __name__ == "__main__":
-    run(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_LOG)
+    bridge_lock = acquire_bridge_lock()
+    if bridge_lock is not None:
+        try:
+            run(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_LOG)
+        finally:
+            release_bridge_lock(bridge_lock)
