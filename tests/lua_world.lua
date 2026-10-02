@@ -33,6 +33,7 @@ minetest = {
     serialize=function(v) return v end,
     deserialize=function(v) return type(v)=="table" and v or nil end,
     log=noop,
+    chat_send_player=noop,
     write_json=function(event) table.insert(events,event); return "event" end,
     get_gametime=function() return now end,
     get_timeofday=function() return 0.5 end,
@@ -63,7 +64,8 @@ minetest = {
         body={pos=pos, velocity=vector.zero(), get_pos=function(self) return self.pos end,
             get_velocity=function(self) return self.velocity end,
             set_velocity=function(self,v) self.velocity=v end,
-            set_acceleration=noop,set_animation=noop,set_yaw=noop,set_nametag_attributes=noop}
+            set_acceleration=function(self,a) self.acceleration=a end,
+            set_animation=noop,set_yaw=noop,set_nametag_attributes=noop}
         return body
     end,
     request_insecure_environment=function()
@@ -135,6 +137,14 @@ local ok,message=commands.anima_evolution.func("singleplayer","status")
 assert(ok and message:find("1",1,true))
 assert(commands.anima_evolution.func("singleplayer","rollback"))
 assert(last_event("development_request").action=="rollback")
+assert(commands.anima_auto.func("singleplayer","off"))
+body.velocity={x=0,y=-3,z=0}
+assert(commands.anima_move.func("singleplayer","north"))
+assert(body.velocity.y==-3 and body.acceleration.y<0, "manual movement must preserve falling physics")
+-- No horizontal progress: the delayed monitor must stop walking, not gravity.
+deferred[#deferred]()
+assert(body.velocity.y==-3 and body.acceleration.y<0, "manual stop must preserve falling physics")
+assert(body.velocity.x==0 and body.velocity.z==0)
 for _,fn in ipairs(shutdown) do fn() end
 assert(not heartbeat, "shutdown must remove the heartbeat")
 assert(last_event("world_shutdown"), "shutdown must notify the host bridge")

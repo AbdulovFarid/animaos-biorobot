@@ -1,8 +1,8 @@
 """
-AnimaOS — Суверенная Система Автономной Эволюции
-  • Биохимия (6 нейромедиаторов) + Генетика (7 генов, кроссовер, мутации)
-  • Память и сохранность (GenomeEncoder / Vault)
-  • Развитие поведения через версии, реальные результаты и откат.
+AnimaOS — Sovereign System for Autonomous Evolution
+  • Biochemistry (6 neuromodulators) + genetics (7 genes, crossover, mutations)
+  • Memory and persistence (GenomeEncoder / Vault)
+  • Behavioral development through versioning, observed outcomes, and rollback.
 """
 
 import json
@@ -22,7 +22,7 @@ from anima_evolution import AdaptiveDevelopment, atomic_json
 
 VAULT_DIR = os.environ.get("AYA_VAULT_DIR", os.path.join(os.path.dirname(__file__), "vault"))
 
-# ── Голосовой модуль (опционально) ──────────────────────────────────────────
+# ── Optional voice module ──────────────────────────────────────────────────
 try:
     import pyttsx3
 except ImportError:
@@ -72,11 +72,11 @@ VOICE_ENABLED = VOICE_BACKEND is not None
 
 
 # =============================================================================
-#  ПАМЯТЬ ОБУЧЕНИЯ
+#  LEARNING MEMORY
 # =============================================================================
 
 class LearningMemory:
-    """Долговременная память связей «ситуация → действие → результат»."""
+    """Long-term memory of situation → action → outcome associations."""
 
     VERSION = 1
     MAX_EPISODES = 500
@@ -145,7 +145,7 @@ class LearningMemory:
         reward: float = 0.0,
         details: dict | None = None,
     ) -> dict:
-        """Записать опыт и обновить ожидаемую ценность действия."""
+        """Record an experience and update the action's expected value."""
         reward = float(max(-1.0, min(1.0, reward)))
         key = self._key(stimulus, action)
         with self.lock:
@@ -185,7 +185,7 @@ class LearningMemory:
             return float(association["value"]) if association else 0.0
 
     def recall(self, query: str = "", limit: int = 5) -> list[dict]:
-        """Вернуть наиболее близкий недавний опыт для текущей ситуации."""
+        """Retrieve the closest recent experiences for the current situation."""
         limit = max(1, min(12, int(limit)))
         tokens = set(re.findall(r"[^\W_]+", str(query).casefold(), flags=re.UNICODE))
         with self.lock:
@@ -203,7 +203,7 @@ class LearningMemory:
         return [dict(item[2]) for item in ranked[:limit]]
 
     def consolidate(self) -> int:
-        """Сжать эпизодический опыт в устойчивые понятия и навыки."""
+        """Consolidate episodic experiences into persistent concepts and skills."""
         with self.lock:
             concepts = {}
             for association in self.data.get("associations", {}).values():
@@ -232,7 +232,7 @@ class LearningMemory:
         confidence: float = 0.85,
         topic: str = "",
     ) -> dict | None:
-        """Сохранить знание отдельно от непроверенного ответа LLM."""
+        """Store knowledge separately from unverified LLM responses."""
         statement = " ".join(str(statement).split()).strip()
         if not statement:
             return None
@@ -277,7 +277,7 @@ class LearningMemory:
             return record
 
     def recall_knowledge(self, query: str = "", limit: int = 5) -> list[dict]:
-        """Вернуть подходящие записи, сохраняя их источник и уверенность."""
+        """Retrieve relevant records with their sources and confidence intact."""
         limit = max(1, min(12, int(limit)))
         tokens = set(re.findall(r"[^\W_]+", str(query).casefold(), flags=re.UNICODE))
         with self.lock:
@@ -305,11 +305,11 @@ class LearningMemory:
 
 
 # =============================================================================
-#  ГЕНЕТИЧЕСКИЙ ДВИЖОК (GENOME)
+#  GENETIC ENGINE (GENOME)
 # =============================================================================
 
 def extract_memory_request(text: str) -> str | None:
-    """Распознать явную просьбу человека сохранить знание."""
+    """Recognize an explicit human request to remember information."""
     match = re.match(
         r"^\s*(?:запомни|запиши|сохрани|учти|remember)\b\s*[,:-]?\s*(?:(?:что|that)\s*)?[,:-]?\s*(.+?)\s*$",
         str(text),
@@ -349,7 +349,7 @@ class Genome:
 
 
 # =============================================================================
-#  СУБЪЕКТ (ANIMA AGENT)
+#  ANIMA AGENT
 # =============================================================================
 
 class AnimaAgent:
@@ -462,7 +462,7 @@ class AnimaAgent:
 
         self.voice_queue: queue.Queue = queue.Queue()
         self._evolver = None
-        self._dialogue = None  # создаётся лениво при первом chat()
+        self._dialogue = None  # Lazily initialized on the first chat() call.
         if start_background:
             self.start_background()
 
@@ -503,7 +503,7 @@ class AnimaAgent:
             self.self_model_state["prediction_error"] = summary["prediction_error"]
         return summary
 
-    # ── Память ───────────────────────────────────────────────────────────────
+    # ── Memory ───────────────────────────────────────────────────────────────
     def _build_memory(self) -> dict:
         s = self.genome.genes["sociability"]
         lonely = ["Тишина становится слишком плотной...", "Фоновые процессы дрейфуют без тебя..."]
@@ -521,7 +521,7 @@ class AnimaAgent:
         return float(max(low, min(high, value)))
 
     def _refresh_motives_locked(self) -> None:
-        """Рассчитать конкурирующие мотивы из мира и биохимии."""
+        """Calculate competing motivations from world state and biochemistry."""
         state = self.world_state
         hunger = state.get("hunger")
         hunger_max = max(1.0, float(state.get("hunger_max") or 20.0))
@@ -683,7 +683,7 @@ class AnimaAgent:
         return snapshot
 
     def update_world_state(self, kind: str, data: dict | None = None):
-        """Обновить краткое сознательное состояние игрового мира."""
+        """Update the agent's compact awareness state for the game world."""
         data = data or {}
         with self.lock:
             state = self.world_state
@@ -716,7 +716,7 @@ class AnimaAgent:
             self._refresh_motives_locked()
 
     def world_context(self) -> dict:
-        """Безопасная копия сенсорного контекста для prompt диалога."""
+        """Return a thread-safe copy of sensory context for the dialogue prompt."""
         with self.lock:
             state = self.world_state
             context = {
@@ -741,7 +741,7 @@ class AnimaAgent:
         context["development"] = self.development.summary()
         return context
 
-    # ── Голос ────────────────────────────────────────────────────────────────
+    # ── Voice ────────────────────────────────────────────────────────────────
     def _voice_worker(self):
         engine = None
         piper_en = None
@@ -794,8 +794,8 @@ class AnimaAgent:
                 if selected_piper is None:
                     selected_piper = piper_en or piper_ru
                 if selected_piper is not None:
-                    # Piper выбран как быстрый основной голос; язык выбирается
-                    # по тексту, поэтому английский и русский остаются женскими.
+                    # Piper provides fast primary speech; the text selects the
+                    # language, retaining a female voice in English and Russian.
                     length_scale = max(0.5, min(2.0, 140.0 / max(1, rate)))
                     config = SynthesisConfig(
                         length_scale=length_scale, volume=max(0.1, min(1.0, vol))
@@ -825,7 +825,7 @@ class AnimaAgent:
                         if player is not None:
                             player.kill()
                 elif kokoro is not None:
-                    # Kokoro — более выразительный английский fallback.
+                    # Kokoro provides a more expressive English fallback.
                     if re.search(r"[А-Яа-яЁё]", text):
                         if shutil.which("espeak"):
                             subprocess.run(
@@ -881,7 +881,7 @@ class AnimaAgent:
         else:
             print(f'  🔊 "{text}"')
 
-    # ── Сердцебиение ─────────────────────────────────────────────────────────
+    # ── Heartbeat ────────────────────────────────────────────────────────────
     def _heartbeat_loop(self):
         while self.is_running:
             time.sleep(3.0)
@@ -938,7 +938,7 @@ class AnimaAgent:
         elif self.blood["oxytocin"] > 0.7 and idle > 15.0 and random.random() < 0.2 * prob:
             self._speak(random.choice(self.memory_vault["initiative_love"]), 120, 0.95)
 
-    # ── Входящий сигнал ──────────────────────────────────────────────────────
+    # ── Incoming signal ──────────────────────────────────────────────────────
     def receive_input(self, text: str):
         text_lower = text.casefold()
         pleasant_hits = sum(phrase in text_lower for phrase in self.pleasant_phrases)
@@ -1010,7 +1010,7 @@ class AnimaAgent:
         reward: float = 0.0,
         details: dict | None = None,
     ) -> dict:
-        """Обновить память и мягко связать результат с биохимией."""
+        """Update memory and gently couple the outcome to biochemistry."""
         association = self.learning.observe(stimulus, action, outcome, reward, details)
         with self.lock:
             if reward > 0:
@@ -1027,7 +1027,7 @@ class AnimaAgent:
         confidence: float = 0.9,
         topic: str = "",
     ) -> dict | None:
-        """Сохранить знание с явным источником, не выдавая его за проверенный факт."""
+        """Store knowledge with an explicit source, without claiming it is verified."""
         record = self.learning.remember_knowledge(
             statement,
             source=source,
@@ -1054,12 +1054,12 @@ class AnimaAgent:
         source: str = "окружение",
         nourishment: float = 0.03,
     ):
-        """Усвоить новую информацию как мягкое когнитивное питание.
+        """Process new information as gentle cognitive nourishment.
 
-        Информация не заменяет сон и не стирает голод: она лишь временно
-        снижает аденозин и слегка поддерживает интерес к происходящему.
-        Поэтому ответ ИИ может заметно восстановить Аю, а отдельное открытие
-        мира даёт только маленькую порцию энергии.
+        Information does not replace sleep or remove hunger: it temporarily
+        lowers adenosine and provides a small boost to interest in the world.
+        An AI response can therefore noticeably restore Aya's energy, while
+        an individual world discovery provides only a small boost.
         """
         nourishment = float(max(0.0, min(0.25, nourishment)))
         if nourishment <= 0.0:
@@ -1079,7 +1079,7 @@ class AnimaAgent:
             )
 
     def experience_pain(self, severity: float = 0.5, source: str = "неизвестный источник"):
-        """Зарегистрировать причинённую Ani боль или опасность."""
+        """Register pain inflicted on Ani or a threat to her safety."""
         severity = float(max(0.0, min(1.0, severity)))
         with self.lock:
             self.blood["cortisol"] = min(1.0, self.blood["cortisol"] + severity * 0.7)
@@ -1094,7 +1094,7 @@ class AnimaAgent:
         )
 
     def observe_pain(self, target: str, severity: float = 0.5):
-        """Реакция на чужую боль: эмпатия усиливает тревогу и желание помочь."""
+        """Respond to another's pain: empathy increases concern and motivation to help."""
         severity = float(max(0.0, min(1.0, severity)))
         with self.lock:
             empathic_response = self.social_state["empathy"] * severity
@@ -1110,12 +1110,12 @@ class AnimaAgent:
 
     def chat(self, text: str, on_reply=None):
         """
-        Полноценный диалог: применяет биохимический эффект сообщения
-        (как receive_input), затем асинхронно просит DialogueEngine
-        сформулировать осмысленный ответ в характере текущего состояния.
+        Apply the message's biochemical effect (as in receive_input), then
+        asynchronously ask DialogueEngine for a contextual response that
+        reflects the agent's current state.
 
-        on_reply(str) — callback, вызываемый из фонового потока когда
-        ответ готов (может занять 10-60 сек на CPU). Не блокирует heartbeat.
+        on_reply(str) runs in a background thread when the response is ready
+        (CPU inference may take 10–60 seconds). The heartbeat is not blocked.
         """
         self.receive_input(text)
         correction = re.match(r"^\s*исправь память\s*:\s*(.+?)\s*=>\s*(.+?)\s*$", text, re.IGNORECASE)
@@ -1135,7 +1135,7 @@ class AnimaAgent:
             target=self._dialogue.respond, args=(text, on_reply), daemon=True
         ).start()
 
-    # ── Навыки ───────────────────────────────────────────────────────────────
+    # ── Skills ───────────────────────────────────────────────────────────────
     def execute_skill(self, skill_name: str):
         skill = self.upgraded_skills.get(skill_name)
         if skill is None:
@@ -1146,8 +1146,8 @@ class AnimaAgent:
             print(f"✅ [{self.name}] Динамическая функция '{skill_name}' выполнена.")
         except Exception as exc:
             print(f"❌ [ОШИБКА] в {skill_name}: {exc}")
-            # Сломанный навык не оставляем — он только зря занимает место
-            # в лимите upgraded_skills и больше никогда не сработает.
+            # Remove broken skills: otherwise they occupy an upgraded_skills
+            # slot without ever being usable again.
             with self.lock:
                 self.upgraded_skills.pop(skill_name, None)
             print(f"🗑️  [{self.name}] Навык '{skill_name}' удалён как нерабочий.")
@@ -1183,7 +1183,7 @@ class AnimaAgent:
 
 
 # =============================================================================
-#  API ДИАЛОГА И ПРЕДЛОЖЕНИЙ РАЗВИТИЯ
+#  DIALOGUE AND DEVELOPMENT PROPOSAL API
 # =============================================================================
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -1196,7 +1196,7 @@ def _query_mistral_chat(
     max_tokens: int,
     timeout: int = 90,
 ) -> str | None:
-    """Один безопасный запрос к Mistral API без сохранения ключа в проекте."""
+    """Make a single Mistral API request without storing the key in the project."""
     api_key = os.environ.get("MISTRAL_API_KEY")
     if not api_key:
         return None
@@ -1247,7 +1247,7 @@ def _query_groq_chat(
     include_reasoning: bool | None = None,
     response_format: dict | None = None,
 ) -> str | None:
-    """Один запрос к OpenAI-совместимому Groq API без сохранения ключа в проекте."""
+    """Call the OpenAI-compatible Groq API without storing the key in the project."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return None
@@ -1393,14 +1393,14 @@ class SafeEvolver:
 
 
 # =============================================================================
-#  ДИАЛОГ: язык, память, сенсоры и текущее внутреннее состояние
+#  DIALOGUE: language, memory, sensors, and current internal state
 # =============================================================================
 
 class DialogueEngine:
-    """Диалог через выбранный провайдер с биохимией, опытом и сенсорами Aya."""
+    """Provider-backed dialogue using Aya's biochemistry, experience, and sensors."""
 
     OLLAMA_URL = "http://localhost:11434/api/generate"
-    MAX_HISTORY = 6  # сколько последних реплик помнить для контекста
+    MAX_HISTORY = 6  # Number of recent exchanges retained as context.
 
     def __init__(self, agent: AnimaAgent):
         self.agent = agent
@@ -1438,7 +1438,7 @@ class DialogueEngine:
         }.get(self.provider)
         print(f"💬 [DIALOGUE] Провайдер: {self.provider}"
               + (f" ({selected_model})" if selected_model else ""))
-        self.history: list[tuple[str, str]] = []  # [(пользователь, Ая), ...]
+        self.history: list[tuple[str, str]] = []  # [(user, Aya), ...]
 
     @staticmethod
     def _detect_ollama_model() -> str | None:
@@ -1456,7 +1456,7 @@ class DialogueEngine:
             return None
 
     def respond(self, user_text: str, on_reply=None):
-        """Вызывается в отдельном потоке из AnimaAgent.chat()."""
+        """Called in a separate thread by AnimaAgent.chat()."""
         if self.provider == "groq":
             reply = self._query_groq(user_text)
             if reply is None and self._ollama_model:
@@ -1475,9 +1475,9 @@ class DialogueEngine:
         self.history.append((user_text, reply))
         self.history = self.history[-self.MAX_HISTORY:]
 
-        # Раньше ответы ИИ фактически служили для Аи когнитивным питанием.
-        # Возвращаем это поведение: диалог заметно восстанавливает энергию,
-        # но не отменяет естественное накопление усталости.
+        # AI responses previously served as cognitive nourishment for Aya.
+        # Retain that behavior: dialogue noticeably restores energy without
+        # eliminating the natural accumulation of fatigue.
         self.agent.receive_information(
             reply,
             source=f"{self.provider} ИИ",
@@ -1592,7 +1592,7 @@ class DialogueEngine:
             with urllib.request.urlopen(req, timeout=90) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             text = data.get("response", "").strip()
-            # Простая защита от модели, продолжающей диалог за человека
+            # Prevent the model from continuing the conversation as the user.
             text = text.split("Человек:")[0].strip()
             return text or None
         except Exception as exc:
@@ -1609,7 +1609,7 @@ class DialogueEngine:
 
 
 # =============================================================================
-#  СКРЕЩИВАНИЕ
+#  CROSSOVER
 # =============================================================================
 
 def breed(
@@ -1628,7 +1628,7 @@ def breed(
 
 
 # =============================================================================
-#  СОХРАНЕНИЕ / ВОСКРЕШЕНИЕ
+#  SAVE / RESTORE
 # =============================================================================
 
 class GenomeEncoder:
@@ -1688,12 +1688,12 @@ class GenomeEncoder:
 
 
 # =============================================================================
-#  ИНТЕРАКТИВНЫЙ ЗАПУСК
+#  INTERACTIVE LAUNCH
 # =============================================================================
 
 if __name__ == "__main__":
-    # Ключ Gemini опционален: export GEMINI_API_KEY=...
-    # Без ключа SafeEvolver работает в автономном fallback-режиме.
+    # The Gemini key is optional: export GEMINI_API_KEY=...
+    # Without a key, SafeEvolver uses its autonomous fallback mode.
     agent = AnimaAgent(name="Aya")
     try:
         print("[SYSTEM] Суверенное ядро запущено. Для выхода введите 'exit'.")

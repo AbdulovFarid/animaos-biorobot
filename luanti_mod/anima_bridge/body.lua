@@ -2,6 +2,7 @@ local modname = minetest.get_current_modname()
 local insecure_environment = ... -- supplied only by this mod's init.lua
 local memory = dofile(minetest.get_modpath(modname) .. "/memory.lua")
 local development = dofile(minetest.get_modpath(modname) .. "/development.lua")
+local navigation = dofile(minetest.get_modpath(modname) .. "/navigation.lua")
 local development_revision = -1
 local development_summary = {}
 local prefer_resource_memory = true
@@ -87,7 +88,7 @@ local BUILD_WALL_HEIGHT = 3
 local BUILD_ROOF_LEVEL = BUILD_WALL_HEIGHT
 local BUILD_PLANKS_NEEDED = 70
 local BUILD_RESOURCE_RADIUS = 64
--- Luanti движет тело по центру модели, поэтому нужен небольшой запас до дерева.
+-- Luanti moves the model by its origin; leave some clearance from the tree.
 local BUILD_RESOURCE_REACH = 4.0
 local BUILD_TREE_NAMES = {
     "rp_default:tree",
@@ -515,8 +516,8 @@ local function plan_path_to(goal, label)
         return true
     end
 
-    -- rp_pathfinder ищет только в локальном радиусе. Для дальнего дерева,
-    -- игрока или укрытия строим маршрут через ближайшую безопасную точку.
+    -- rp_pathfinder searches locally. For a distant tree, player, or shelter,
+    -- route through a nearby safe waypoint.
     if goal_distance > PATH_SEARCH_DISTANCE - 3 then
         local dx = (goal.x - start.x) / goal_distance
         local dz = (goal.z - start.z) / goal_distance
@@ -546,24 +547,24 @@ local function plan_path_to(goal, label)
         memory.remember("path_unavailable", {target = label})
         return false
     end
-    local found, reason = rp_pathfinder.find_path(start, goal, PATH_SEARCH_DISTANCE, {
+    local found, reason, first_waypoint = navigation.find_path(start, goal, PATH_SEARCH_DISTANCE, {
         max_jump = 1,
         max_drop = 1,
         clear_height = 2,
         respect_disable_jump = true,
-    }, PATH_TIMEOUT)
+    }, PATH_TIMEOUT, last_moveresult)
     if not found then
         clear_path()
-        memory.remember("path_failed", {target = label, reason = reason})
-        minetest.log("action", "[anima_bridge] no path to " .. tostring(label) .. ": " .. tostring(reason))
         if minetest.get_gametime() - last_path_failure_at >= 5 then
             last_path_failure_at = minetest.get_gametime()
+            memory.remember("path_failed", {target = label, reason = reason})
+            minetest.log("action", "[anima_bridge] no path to " .. tostring(label) .. ": " .. tostring(reason))
             emit_world_event("navigation_result", {success = false, reason = tostring(reason), target = goal})
         end
         return false
     end
     path = found
-    path_index = 2
+    path_index = first_waypoint
     path_target_label = label
     path_goal = goal
     path_revision = development_revision
@@ -633,8 +634,8 @@ local function finish_social_mode()
     minetest.log("action", "[anima_bridge] human contact period ended; resuming previous goal")
 end
 
--- Объявление вперёд: социальный и защитный режимы используют общий
--- пошаговый следопыт, который объявлен ниже по файлу.
+-- Forward declaration: social and safety modes share the path-following
+-- controller defined later in this file.
 local follow_food_path
 
 local function run_social_mode(dtime)
@@ -683,8 +684,8 @@ local function get_home_entry()
     return {
         x = home_site.x + dx,
         y = home_site.y,
-        -- Цель находится на один блок внутри дверного проёма,
-        -- чтобы Aya действительно заходила под крышу.
+        -- Target one block inside the doorway so Aya actually moves
+        -- under the roof.
         z = home_site.z + dz,
     }
 end
@@ -747,8 +748,8 @@ local function update_safety_state(dtime)
     local home_entry = get_home_entry()
     local home_distance = home_entry and vector.distance(pos, home_entry) or math.huge
 
-    -- В шторм приоритетом является готовое укрытие. Ночью выбирается
-    -- ближайшее безопасное место: дом или человек.
+    -- During storms, prefer a completed shelter. At night, choose the
+    -- nearest safe place: home or a person.
     if storm and not sheltered then
         if home_entry then
             mode = "shelter"
@@ -1072,8 +1073,8 @@ local function collect_build_resource()
         return false
     end
     stop_autonomous_motion()
-    -- Убираем весь вертикальный ствол за один подход: после удаления
-    -- нижнего блока верхние блоки больше не должны оставаться недоступными.
+    -- Harvest the entire vertical trunk in one visit so upper blocks do
+    -- not become unreachable after the bottom block is removed.
     local harvested = 0
     for dy = -8, 8 do
         local tree_pos = {
@@ -1127,7 +1128,7 @@ follow_food_path = function(dtime)
                 development_revision = path_revision,
             })
         end
-        -- Маршрут закончился: очистить его, чтобы цель была рассчитана заново.
+        -- Clear the completed route so its destination can be recalculated.
         clear_path()
         stop_autonomous_motion()
         return
@@ -1284,7 +1285,7 @@ local function run_liquid_escape(dtime)
         return true
     end
 
-    -- Запасной выход, если pathfinder не умеет строить путь из воды.
+    -- Fallback escape when the pathfinder cannot route out of water.
     local velocity = ani_object:get_velocity() or vector.zero()
     if liquid_escape_target then
         local delta = {
@@ -1471,8 +1472,8 @@ local function run_building(dtime)
             if autonomy_elapsed >= 1.0 or (not path and autonomy_elapsed >= 0.5) then
                 autonomy_elapsed = 0.0
                 if not plan_path_to(build_resource_target.approach, "добыча древесины") then
-                    -- Не забываем дерево из-за временного тайм-аута поиска:
-                    -- маршрут будет повторён после короткой паузы.
+                    -- Keep the tree target after a temporary search timeout;
+                    -- retry the route after a short pause.
                     clear_path()
                 end
             end
@@ -1800,14 +1801,13 @@ minetest.register_chatcommand("anima_move", {
         local started = ani_object:get_pos()
         local elapsed = 0.0
         local function stop_motion()
-            if ani_object and ani_object:get_pos() then
-                ani_object:set_velocity(vector.zero())
-                ani_object:set_acceleration(vector.zero())
-                ani_object:set_animation({x = 0, y = 79}, 33, 0, true)
-            end
+            stop_autonomous_motion()
         end
-        ani_object:set_acceleration(vector.zero())
-        ani_object:set_velocity(vector.multiply(direction, 2))
+        local velocity = ani_object:get_velocity() or vector.zero()
+        velocity.x = direction.x * 2
+        velocity.z = direction.z * 2
+        ani_object:set_acceleration({x = 0, y = JUMP_GRAVITY, z = 0})
+        ani_object:set_velocity(velocity)
         ani_object:set_animation({x = 168, y = 187}, 33, 0, true)
         local function monitor()
             if token ~= move_token or not ani_object or not ani_object:get_pos() then return end
@@ -1963,8 +1963,8 @@ local function chat_requests_follow(message)
     return false
 end
 
--- Прямой локальный вызов не зависит от Python/Groq и может прервать строительство,
--- подойти к игроку, а затем вернуть прежнюю строительную цель.
+-- A direct local call does not depend on Python/Groq. It can pause construction,
+-- approach the player, and then resume the previous building goal.
 function anima_bridge_handle_chat(name, message)
     if not chat_requests_follow(message) then return false end
     local player = minetest.get_player_by_name(name)

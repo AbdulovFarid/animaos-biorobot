@@ -78,6 +78,10 @@ class LuaTests(unittest.TestCase):
         self.execute("MOD_PATH=" + repr(str(ROOT / "luanti_mod/anima_bridge")) +
                      "\ndofile(" + repr(str(ROOT / "tests/lua_world.lua")) + ")")
 
+    def test_navigation_recovers_only_from_actual_support_contacts(self):
+        self.execute("MOD_PATH=" + repr(str(ROOT / "luanti_mod/anima_bridge")) +
+                     "\ndofile(" + repr(str(ROOT / "tests/lua_navigation.lua")) + ")")
+
 
 if __name__ == "__main__":
     unittest.main()

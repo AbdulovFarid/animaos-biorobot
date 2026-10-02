@@ -86,34 +86,34 @@ Aya listens for eight seconds and passes the transcription through the same dial
 ## Memory and Private Data
 
 Files in `vault/` contain Aya's state and personal memory. They are intentionally excluded from Git and must remain local.
-## Experience-based development: Biochemistry remains a factor in motivations and reactions to events. The old Python patch that directly reset cortisol levels has been replaced by JSON-based behavioral change suggestions. Simply stating "I am tired" no longer removes fatigue; recovery occurs during rest, originating from the in-game body. Hunger remains a distinct game need. The following mechanisms have been implemented: - Genome: small experimental modifications to existing genes, plus the original genome and version history. Limits: max 0.03 change per trial and 0.10 deviation from the original value; the accepted version persists across sessions. - Memory: action preferences update based on outcomes, and known resource locations are tied to specific worlds. Depleted resources are marked as unavailable. Knowledge corrections preserve the original entry and source; a human assertion does not automatically become a verified fact. Chat example: `correct memory: apples underwater => apples on trees`. - Self-model: confirmed successes/failures, intentions, success predictions, and prediction errors. This is a computational model of self-observation; Subjective consciousness is not measured here. - Body model: results of jumps and routes, observed height of successful ascents, walking speed tests, and pauses between jumps. Body geometry, gravity, and appearance do not change automatically. - Foraging: returning to remembered resources, verifying their availability, choosing between memory and searching for the nearest tree, and accumulating experience from successful and unsuccessful attempts. - Construction: 5×5 and 7×7 houses, walls 3 or 4 blocks high, and four possible entrance directions. Required planks are calculated based on the plan. Before a house is deemed complete, the system checks for structural support, walls, a roof, an empty interior, an entrance, and an unobstructed space in front of the entrance. When a new design is selected, the dimensions of the previously built house are stored separately. - Behavioral program structure: the order of registered modules can be modified. Essential needs and the safety controller retain priority. The model does not overwrite arbitrary Python files; instead, the active behavioral scheme is modified. Each proposal is first verified against a separate copy of the state: checking for a valid layout, handling hunger/rest/danger scenarios, and reproducing recent contexts. This check does not simulate Luanti's physics engine. Then, a single trial version is permitted in the game. Comparison requires a minimum of 6 observed outcomes (2 for construction), followed by 8 new trial outcomes (3 for construction). A rollback occurs in the event of failure, lack of improvement, or insufficient data within 15 minutes (60 minutes for construction). Events must be those actually executed in the Lua version; merely accepting a command or receiving an AI response does not count as a completed action. Success is evaluated based on in-game outcomes; for houses, factors such as suitability, usable area, and block count are considered. The comparison is currently observational rather than proof of causal improvement, as different areas of the world may vary in complexity. A human can roll back the current trial or the last accepted version. Proposals are submitted no more than once every 5 minutes; without cloud AI, local variants are available for empirical testing. In-game: occur no more than once every 5 minutes; local options are available for verification, without relying on the cloud. In-game:
-3 134
+
 ## Development through experience
 
 Biochemistry remains a factor in motivations and reactions to events. The old Python patch request that directly cleared cortisol has been replaced by JSON-based proposals for behavioral changes. Simply voicing a phrase about fatigue no longer eliminates it; recovery through rest occurs as a post-event process within the game body. Hunger remains a distinct in-game need.
 
 The following mechanisms have been implemented:
 
-- Genome: small trial modifications to existing genes, plus the original genome and version history. 
-Maximum change of 0.03 per trial and 0.10 relative to the original value; the accepted version persists across sessions.
-- Memory: action preferences update based on results; known resource locations are tied to specific worlds. Depleted resources are marked as inaccessible. 
-Knowledge corrections preserve the original entry and source; a human assertion does not automatically become a verified fact. Chat example:
-`fix memory: apples underwater => apples on trees`.
-- Self-model: confirmed successes/failures, intention, success prediction, and prediction error. 
-This is a computational model of self-observation; subjective consciousness is not measured here.
+- Genome: small trial modifications to existing genes, plus the original genome and version history.
+  Maximum change of 0.03 per trial and 0.10 relative to the original value; the accepted version persists across sessions.
+- Memory: action preferences update based on results; known resource locations are tied to specific worlds.
+  Depleted resources are marked as inaccessible. Knowledge corrections preserve the original entry and source;
+  a human assertion does not automatically become a verified fact. Russian-language chat commands
+  let users submit explicit memory corrections.
+- Self-model: confirmed successes/failures, intention, success prediction, and prediction error.
+  This is a computational model of self-observation; subjective consciousness is not measured here.
 - Body model: results of jumps and routes, observed height of successful climbs,
-trials of walking speed and pauses between jumps. Body geometry, gravity, and appearance
-do not change automatically.
+  trials of walking speed and pauses between jumps. Body geometry, gravity, and appearance
+  do not change automatically.
 - Foraging: returning to remembered resources, checking availability, choosing between
-memory and searching for the nearest tree, and accumulating experience from successful and failed attempts.
+  memory and searching for the nearest tree, and accumulating experience from successful and failed attempts.
 - Construction: 5×5 and 7×7 houses, walls 3 or 4 blocks high, and four possible entrance directions. The required boards are calculated based on the plan. Before a house is deemed complete, the supports,
-walls, roof, interior space, entrance, and the open area in front of the entrance are checked.
-When selecting a new project, the dimensions of the already built house are saved separately.
-- Behavior program structure: the order of registered modules can change. 
-Essential needs and the game's safety controller retain priority. 
-The model does not overwrite arbitrary Python files; instead, the executable behavior scheme is modified.
+  walls, roof, interior space, entrance, and the open area in front of the entrance are checked.
+  When selecting a new project, the dimensions of the already built house are saved separately.
+- Behavior program structure: the order of registered modules can change.
+  Essential needs and the game's safety controller retain priority.
+  The model does not overwrite arbitrary Python files; instead, the executable behavior scheme is modified.
 
-Each proposal is first verified against a separate copy of the state: checking for a valid layout,
+Each proposal is first verified against a separate copy of the state: validating the proposal schema,
 handling hunger/rest/danger scenarios, and replaying recent contexts. This verification
 does not simulate Luanti physics. Then, a single trial run is permitted in the game. Comparison
 requires a minimum of 6 observed outcomes (2 for construction), followed by 8 new trial outcomes
@@ -129,12 +129,14 @@ generated no more than once every 5 minutes; in the absence of cloud AI, local v
 are available for empirical testing.
 
 In-game:
+
 ```text
 /anima_evolution status
 /anima_evolution rollback
 /anima_reflect
 /anima_build start
 ```
+
 The new memory file is located at `vault/Aya_development.json`, alongside the existing
 `Aya_learning.json` and `Aya_gen0.json`. Existing records and personality data are not reset.
 Default paths are bound to the project rather than the current terminal directory.
@@ -160,9 +162,25 @@ Checks performed without launching the game, audio output, or API requests:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Lua ​​checks utilize the system's Lua 5.3/5.2 library. They verify all plan variants
+Lua checks utilize the system's Lua 5.3/5.2 library. They verify all plan variants
 and the adapter's operation loop within a test world; actual collisions and
 animations require separate verification within Luanti.
+
+## Movement fixes
+
+The pathfinder now uses actual ground-contact data when Aya stands on a block's edge
+and her rounded position is above empty space. She first walks onto the supporting block,
+then follows the route; jump, drop, and clearance limits remain unchanged.
+Manual movement and stopping also preserve gravity and vertical velocity.
+
+The regression suite covers corner recovery, invalid support contacts, and manual falling.
+The movement fix was additionally verified in Luanti on an isolated copy of the affected world.
+Restart the world to load updated Lua files; existing memory and biochemistry are preserved.
+
+## Language
+
+Repository documentation, code comments, and commit messages are written in English.
+Russian dialogue, input recognition, and existing in-game messages remain supported.
 
 ## Status
 

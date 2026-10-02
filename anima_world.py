@@ -1,18 +1,18 @@
 """
-anima_world.py — 2D мир для AnimaAgent (Pygame)
+anima_world.py — 2D world for AnimaAgent (Pygame)
 
-Запуск:
+Usage:
     python anima_world.py
 
-Управление:
-    Клик по полю ввода снизу → печатать текст → Enter — отправить Ае
-    ПРОБЕЛ (удержание)        — позвать Аю к курсору мыши
-    ESC / закрыть окно         — выход (геном автоматически сохраняется)
+Controls:
+    Click the input field at the bottom → type → Enter to send a message to Aya
+    Hold SPACE              — call Aya toward the mouse cursor
+    ESC / close the window  — exit (the genome is saved automatically)
 
-Ая отвечает через DialogueEngine (локальная модель в Ollama) — ответ может
-занимать 10-60 секунд на CPU. Пока она "думает", над ней горит индикатор
-"...". Когда ответ готов — текст показывается в облаке над ней и
-озвучивается (если pyttsx3 доступен).
+Aya responds through DialogueEngine. Local Ollama inference may take
+10–60 seconds on a CPU. An "..." indicator appears while a response is
+being generated. The completed response appears in a speech bubble and
+is spoken if a voice backend is available.
 """
 
 import math
@@ -24,12 +24,12 @@ import pygame
 
 from anima_agent import AnimaAgent, GenomeEncoder
 
-# ── Настройки окна ───────────────────────────────────────────────────────────
+# ── Window settings ──────────────────────────────────────────────────────────
 WIDTH, HEIGHT = 960, 700
-WORLD_HEIGHT = 580   # верхняя часть — мир, нижняя — панель ввода
+WORLD_HEIGHT = 580   # World above, input panel below.
 FPS = 60
 
-# ── Палитра ───────────────────────────────────────────────────────────────────
+# ── Palette ──────────────────────────────────────────────────────────────────
 COLORS = {
     "bg":         (18, 18, 24),
     "garden":     (40, 90, 60),
@@ -83,10 +83,10 @@ class WorldAgent:
         self.last_decision_time = 0.0
         self.called = False
 
-        # ── Состояние диалога для визуализации ──
+        # ── Dialogue state for visualization ──
         self.is_thinking = False
         self.last_said = ""
-        self.last_said_until = 0.0  # time.time(), до которого показывать облако
+        self.last_said_until = 0.0  # time.time() deadline for the speech bubble.
 
     def decide_target(self, now: float, call_pos=None):
         if call_pos is not None:
@@ -129,9 +129,9 @@ class WorldAgent:
                         self.core.blood[key] = max(0.0, min(1.0, self.core.blood[key] + delta))
                 break
 
-    # ── Диалог ────────────────────────────────────────────────────────────────
+    # ── Dialogue ─────────────────────────────────────────────────────────────
     def send_message(self, text: str):
-        """Отправляет сообщение Ае и просит её визуально показать что думает."""
+        """Send Aya a message and display an indicator while she prepares a reply."""
         self.is_thinking = True
 
         def on_reply(reply: str):
@@ -143,7 +143,7 @@ class WorldAgent:
 
 
 class TextInput:
-    """Простое однострочное текстовое поле для Pygame."""
+    """A simple single-line text input for Pygame."""
 
     def __init__(self, rect: pygame.Rect, font):
         self.rect = rect
@@ -224,13 +224,13 @@ def draw_agent(screen, wa: WorldAgent, font):
     if wa.called:
         pygame.draw.circle(screen, COLORS["call_ring"], (x, y), 22, width=1)
 
-    # ── Индикатор "думает" ──
+    # ── Response-generation indicator ──
     if wa.is_thinking:
         dots = "." * (1 + int(time.time() * 2) % 3)
         label = font.render(dots, True, COLORS["agent_talk"])
         screen.blit(label, (x - 6, y - 34))
 
-    # ── Облако с последней репликой ──
+    # ── Speech bubble containing the latest reply ──
     elif time.time() < wa.last_said_until and wa.last_said:
         lines = wrap_text(wa.last_said, font, 260)
         padding = 10

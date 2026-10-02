@@ -8,17 +8,17 @@ class Biorobot(ShowBase):
     def __init__(self):
         super().__init__()
 
-        # Включаем PBR
+        # Enable physically based rendering.
         self.pipeline = simplepbr.init()
 
-        # Отключаем управление мышью Panda3D
+        # Disable Panda3D's default mouse controls.
         self.disableMouse()
 
         print("\n==============================")
         print("Загрузка модели...")
         print("==============================")
 
-        # Загружаем модель
+        # Load the model.
         self.ani = self.loader.loadModel("assets/models/ani.glb")
 
         print("\nСтруктура модели:")
@@ -38,20 +38,20 @@ class Biorobot(ShowBase):
 
         self.ani.reparentTo(self.render)
 
-        # Масштаб
+        # Scale.
         self.ani.setScale(10)
 
-        # Положение
+        # Position.
         self.ani.setPos(0, 8, -2)
 
-        # Поворот
+        # Rotation.
         self.ani.setH(180)
 
-        # Камера
+        # Camera.
         self.cam.setPos(0, -25, 5)
         self.cam.lookAt(self.ani)
 
-        # Свет
+        # Lighting.
 
         ambient = AmbientLight("ambient")
         ambient.setColor((1, 1, 1, 1))

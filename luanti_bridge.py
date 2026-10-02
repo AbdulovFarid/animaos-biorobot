@@ -1,10 +1,10 @@
-"""Локальный мост между журналом Luanti и когнитивным ядром Ani.
+"""Local bridge between the Luanti log and Ani's cognitive core.
 
-Запуск:
+Usage:
     python3 luanti_bridge.py
 
-Мост читает только строки с маркером [anima_event] и передаёт их
-AnimaAgent. Сам мир и его Lua-логика остаются автономными.
+The bridge reads only lines marked [anima_event] and forwards them to
+AnimaAgent. The world and its Lua logic remain autonomous.
 """
 
 import json
@@ -77,7 +77,7 @@ def _multipart_audio_body(audio_bytes: bytes, filename: str, fields: dict[str, s
 
 
 def transcribe_vosk(audio_path: str) -> str:
-    """Локальный русский fallback, когда Groq Whisper недоступен."""
+    """Local Russian-language fallback when Groq Whisper is unavailable."""
     global VOSK_MODEL
     try:
         from vosk import KaldiRecognizer, Model
@@ -110,7 +110,7 @@ def transcribe_vosk(audio_path: str) -> str:
 
 
 def transcribe_microphone(seconds: float = MIC_RECORD_SECONDS) -> str:
-    """Записать короткую фразу и распознать её через Groq или локальный Vosk."""
+    """Record a short phrase and transcribe it with Groq or local Vosk."""
     if not shutil.which("arecord"):
         print("[VOICE ERROR] Команда arecord не найдена.")
         return ""
@@ -214,7 +214,7 @@ def transcribe_microphone(seconds: float = MIC_RECORD_SECONDS) -> str:
 
 
 def acquire_bridge_lock():
-    """Не допускает второй экземпляр моста и повторную озвучку."""
+    """Prevent duplicate bridge processes and overlapping speech output."""
     try:
         import fcntl
         handle = open(BRIDGE_LOCK_PATH, "w", encoding="utf-8")
@@ -276,7 +276,7 @@ def parse_event(line: str) -> dict | None:
 
 
 class WorldPlanner:
-    """Выбирает одну безопасную игровую цель и передаёт её Lua-моду."""
+    """Select one safe in-game goal and pass it to the Lua mod."""
 
     def __init__(self, agent: AnimaAgent, command_path: str = COMMAND_PATH):
         self.agent = agent
@@ -403,8 +403,8 @@ class WorldPlanner:
             self._write_command(social_command)
             return
 
-        # Чат не должен запускать обычный выбор explore/build: контакт с человеком
-        # имеет приоритет даже если LLM-планировщик занят или недавно планировал.
+        # Chat must not trigger the usual explore/build selection: human contact
+        # takes priority even when the LLM planner is busy or ran recently.
         if kind == "chat":
             return
 
