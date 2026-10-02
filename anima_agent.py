@@ -2,13 +2,9 @@
 AnimaOS — Суверенная Система Автономной Эволюции
   • Биохимия (6 нейромедиаторов) + Генетика (7 генов, кроссовер, мутации)
   • Память и сохранность (GenomeEncoder / Vault)
-  • Самомодификация через Gemini (SafeEvolver) — AST-валидация +
-    whitelist по ПАТТЕРНУ имени функции (не жёсткий список, а regex-правило,
-    так что LLM свободна в названиях, но не может протащить произвольный код
-    под видом произвольного имени).
+  • Развитие поведения через версии, реальные результаты и откат.
 """
 
-import ast
 import json
 import os
 import queue
@@ -22,6 +18,9 @@ import tempfile
 import urllib.request
 
 import numpy as np
+from anima_evolution import AdaptiveDevelopment, atomic_json
+
+VAULT_DIR = os.environ.get("AYA_VAULT_DIR", os.path.join(os.path.dirname(__file__), "vault"))
 
 # ── Голосовой модуль (опционально) ──────────────────────────────────────────
 try:
@@ -70,81 +69,6 @@ else:
     print("[SYSTEM] Локальный голосовой движок не найден. Голос отключён.")
 
 VOICE_ENABLED = VOICE_BACKEND is not None
-
-
-# =============================================================================
-#  ПЕСОЧНИЦА ДЛЯ САМОМОДИФИКАЦИИ
-# =============================================================================
-
-SAFE_BUILTINS: dict = {
-    "abs": abs, "bool": bool, "dict": dict, "float": float,
-    "int": int, "len": len, "list": list, "max": max, "min": min,
-    "print": print, "range": range, "round": round, "str": str,
-    "tuple": tuple, "type": type, "zip": zip,
-    "pow": pow, "divmod": divmod, "sum": sum,
-}
-
-FORBIDDEN_NAMES = {
-    "exec", "eval", "compile", "__import__", "open", "input",
-    "globals", "locals", "vars", "getattr", "setattr", "delattr",
-    "breakpoint", "memoryview",
-}
-
-FORBIDDEN_MODULES = {
-    "os", "sys", "subprocess", "shutil", "ctypes",
-    "socket", "http", "urllib", "requests", "multiprocessing",
-}
-
-# Имя навыка должно быть валидным python-идентификатором из латиницы/underscore,
-# разумной длины, без dunder-обёртки. LLM свободна выбрать любое осмысленное имя
-# в этих границах — это НЕ жёсткий список, а форма.
-SKILL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{2,40}$")
-
-
-def _validate_code(code: str) -> bool:
-    """AST-валидация: синтаксис + запрет опасных вызовов/импортов/атрибутов."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as exc:
-        print(f"❌ [AST] Синтаксическая ошибка: {exc}")
-        return False
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_NAMES:
-                print(f"❌ [AST] Запрещённый вызов: {node.func.id}()")
-                return False
-
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            mods = []
-            if isinstance(node, ast.Import):
-                mods = [n.name.split(".")[0] for n in node.names]
-            elif node.module:
-                mods = [node.module.split(".")[0]]
-            for mod in mods:
-                if mod in FORBIDDEN_MODULES:
-                    print(f"❌ [AST] Запрещён импорт модуля: {mod}")
-                    return False
-
-        if isinstance(node, ast.Attribute):
-            if node.attr.startswith("__") and not node.attr.startswith("__len__"):
-                print(f"❌ [AST] Запрещён доступ к dunder-атрибуту: {node.attr}")
-                return False
-
-    return True
-
-
-def _validate_skill_name(name: str) -> bool:
-    """Whitelist ПО ФОРМЕ, не по жёсткому списку: LLM может выбрать
-    любое имя-функцию, но оно должно быть простым snake_case
-    идентификатором — не dunder, не системным именем."""
-    if not SKILL_NAME_PATTERN.match(name):
-        print(f"❌ [NAME] Имя навыка не соответствует разрешённому шаблону: {name!r}")
-        return False
-    if name in FORBIDDEN_NAMES:
-        print(f"❌ [NAME] Имя навыка совпадает с запрещённым системным именем: {name}")
-        return False
-    return True
 
 
 # =============================================================================
@@ -238,7 +162,7 @@ class LearningMemory:
                 association["successes"] += 1
             previous = float(association["value"])
             count = association["attempts"]
-            association["value"] = previous + (reward - previous) / count
+            association["value"] = previous + min(0.25, 1 / count) * (reward - previous)
             association["confidence"] = min(1.0, count / 10.0)
             association["last_outcome"] = outcome
             association["last_seen"] = time.time()
@@ -288,13 +212,15 @@ class LearningMemory:
                 concept = str(association.get("stimulus", "")).strip()
                 if not concept:
                     continue
-                concepts[concept] = {
+                candidate = {
                     "preferred_action": association.get("action"),
                     "value": round(float(association.get("value", 0.0)), 4),
                     "confidence": round(float(association.get("confidence", 0.0)), 4),
                     "attempts": int(association.get("attempts", 0)),
                     "last_outcome": association.get("last_outcome"),
                 }
+                if concept not in concepts or candidate["value"] > concepts[concept]["value"]:
+                    concepts[concept] = candidate
             self.data["concepts"] = concepts
             self._save()
             return len(concepts)
@@ -316,7 +242,8 @@ class LearningMemory:
         with self.lock:
             knowledge = self.data.setdefault("knowledge", [])
             for item in reversed(knowledge):
-                if str(item.get("statement", "")).casefold() == normalized:
+                if (str(item.get("statement", "")).casefold() == normalized
+                        and item.get("source") == str(source) and not item.get("superseded")):
                     item["last_seen"] = now
                     item["seen_count"] = int(item.get("seen_count", 1)) + 1
                     item["confidence"] = max(
@@ -339,12 +266,22 @@ class LearningMemory:
             self._save()
             return dict(record)
 
+    def correct_knowledge(self, previous: str, replacement: str, source="человек"):
+        """Keep corrections and their source without claiming sensor confirmation."""
+        with self.lock:
+            for item in self.data["knowledge"]:
+                if item["statement"].casefold() == previous.strip().casefold():
+                    item["superseded"] = {"by": replacement.strip(), "source": source, "time": time.time()}
+            record = self.remember_knowledge(replacement, source=source, confidence=0.85, topic="исправление")
+            self._save()
+            return record
+
     def recall_knowledge(self, query: str = "", limit: int = 5) -> list[dict]:
         """Вернуть подходящие записи, сохраняя их источник и уверенность."""
         limit = max(1, min(12, int(limit)))
         tokens = set(re.findall(r"[^\W_]+", str(query).casefold(), flags=re.UNICODE))
         with self.lock:
-            knowledge = list(self.data.get("knowledge", []))
+            knowledge = [item for item in self.data.get("knowledge", []) if not item.get("superseded")]
         ranked = []
         for index, item in enumerate(reversed(knowledge)):
             text = " ".join(
@@ -418,12 +355,17 @@ class Genome:
 class AnimaAgent:
     GENERATION = 0
 
-    def __init__(self, name: str = "Aya", genome: Genome = None, generation: int = 0):
+    def __init__(self, name: str = "Aya", genome: Genome = None, generation: int = 0,
+                 start_background: bool = True, memory_dir: str = None):
         AnimaAgent.GENERATION = max(AnimaAgent.GENERATION, generation)
         self.name       = name
         self.generation = generation
-        self.learning   = LearningMemory(os.path.join("vault", f"{name}_learning.json"))
+        self.memory_dir = memory_dir or VAULT_DIR
+        self.learning   = LearningMemory(os.path.join(self.memory_dir, f"{name}_learning.json"))
         self.genome     = genome or Genome()
+        self.development = AdaptiveDevelopment(
+            os.path.join(self.memory_dir, f"{name}_development.json"), self.genome.genes)
+        self.genome.genes = self.development.runtime()["genes"]
         self.lock       = threading.Lock()
         self.is_running = True
 
@@ -519,17 +461,47 @@ class AnimaAgent:
         }
 
         self.voice_queue: queue.Queue = queue.Queue()
-        if VOICE_ENABLED:
-            threading.Thread(target=self._voice_worker, daemon=True).start()
-
-        self._evolver = SafeEvolver(self)
-        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+        self._evolver = None
         self._dialogue = None  # создаётся лениво при первом chat()
+        if start_background:
+            self.start_background()
 
         print(f"\n{'='*60}")
         print(f"  [ROUTINE] Пробуждение сущности {self.name} | Поколение {self.generation}")
         print(self.genome.describe())
         print(f"{'='*60}\n")
+
+    def start_background(self):
+        if self._evolver is not None:
+            return
+        self._evolver = SafeEvolver(self)
+        if VOICE_ENABLED:
+            threading.Thread(target=self._voice_worker, daemon=True).start()
+        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+
+    def observe_development(self, kind, data):
+        with self.lock:
+            context = {
+                "position": self.world_state.get("position"),
+                "hunger": self.world_state.get("hunger"),
+                "goal": self.goal_state.get("active"),
+                "current_goal": self.goal_state.get("active"),
+                "motives": dict(self.motives),
+                "biochemistry": dict(self.blood),
+                "nodes": list(self.world_state.get("nodes") or []),
+                "night": self.world_state.get("night"),
+                "storm": self.world_state.get("storm"),
+                "protected": self.world_state.get("protected"),
+            }
+        summary = self.development.observe(kind, data, context)
+        genes = self.development.runtime()["genes"]
+        with self.lock:
+            self.genome.genes = genes
+            self.self_model_state["learned_capabilities"] = summary["competence"]
+            self.self_model_state["limitations"] = summary["unknowns"]
+            self.self_model_state["body_model"] = summary["body"]
+            self.self_model_state["prediction_error"] = summary["prediction_error"]
+        return summary
 
     # ── Память ───────────────────────────────────────────────────────────────
     def _build_memory(self) -> dict:
@@ -707,6 +679,7 @@ class AnimaAgent:
         )
         snapshot["memories"] = self.learning.recall(goal_query, limit=5)
         snapshot["memory_stats"] = self.learning.stats()
+        snapshot["development"] = self.development.summary()
         return snapshot
 
     def update_world_state(self, kind: str, data: dict | None = None):
@@ -746,7 +719,7 @@ class AnimaAgent:
         """Безопасная копия сенсорного контекста для prompt диалога."""
         with self.lock:
             state = self.world_state
-            return {
+            context = {
                 "game": state["game"],
                 "connected": state["connected"],
                 "position": state["position"],
@@ -765,6 +738,8 @@ class AnimaAgent:
                 "last_action": state["last_action"],
                 "last_event": state["last_event"],
             }
+        context["development"] = self.development.summary()
+        return context
 
     # ── Голос ────────────────────────────────────────────────────────────────
     def _voice_worker(self):
@@ -910,6 +885,8 @@ class AnimaAgent:
     def _heartbeat_loop(self):
         while self.is_running:
             time.sleep(3.0)
+            if not self.is_running:
+                break
             with self.lock:
                 self._metabolize()
                 idle = time.time() - self.last_interaction_time
@@ -953,12 +930,10 @@ class AnimaAgent:
 
         if self.blood["adenosine"] > 0.85 and random.random() < 0.3 * prob:
             self._speak(random.choice(self.memory_vault["sleepy"]), 110, 0.7)
-            self.blood["adenosine"] = 0.4
             print(f"\n[AUTONOMOUS] {self.name} истощена.")
 
         elif self.blood["cortisol"] > 0.4 and idle > 20.0 and random.random() < 0.4 * prob:
             self._speak(random.choice(self.memory_vault["bored"]), 145, 0.9)
-            self.blood["cortisol"] = max(0.1, self.blood["cortisol"] - 0.2)
 
         elif self.blood["oxytocin"] > 0.7 and idle > 15.0 and random.random() < 0.2 * prob:
             self._speak(random.choice(self.memory_vault["initiative_love"]), 120, 0.95)
@@ -1143,6 +1118,9 @@ class AnimaAgent:
         ответ готов (может занять 10-60 сек на CPU). Не блокирует heartbeat.
         """
         self.receive_input(text)
+        correction = re.match(r"^\s*исправь память\s*:\s*(.+?)\s*=>\s*(.+?)\s*$", text, re.IGNORECASE)
+        if correction:
+            self.learning.correct_knowledge(correction[1], correction[2])
         memory_request = extract_memory_request(text)
         if memory_request:
             self.remember_knowledge(
@@ -1186,6 +1164,7 @@ class AnimaAgent:
 
     def stop(self):
         self.is_running = False
+        self.development.save()
 
     def personality_snapshot(self) -> dict:
         return {
@@ -1204,7 +1183,7 @@ class AnimaAgent:
 
 
 # =============================================================================
-#  СЕТЕВОЙ ЭВОЛЮТОР (GEMINI API) — с whitelist по форме имени
+#  API ДИАЛОГА И ПРЕДЛОЖЕНИЙ РАЗВИТИЯ
 # =============================================================================
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -1318,339 +1297,107 @@ def _query_groq_chat(
 
 
 class SafeEvolver:
-    """
-    Самомодификация через ЛОКАЛЬНУЮ модель в Ollama — без ключей, без сети,
-    без оплаты. Если Ollama не запущена или модель не найдена — агент
-    использует встроенный fallback-патч и продолжает жить как обычно.
-    """
+    """Propose bounded changes to behavior, then measure them in the world."""
 
-    OLLAMA_URL = "http://localhost:11434/api/generate"
-    # Порядок предпочтений локальных моделей — берём первую найденную в `ollama list`.
-    OLLAMA_MODEL_PREFERENCE = ["phi3", "gemma4", "my_child", "llama3"]
-
-    def __init__(self, agent: AnimaAgent):
+    def __init__(self, agent):
         self.agent = agent
         self._busy = False
-        self._ollama_model: str | None = None
-        self._mistral_model = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
+        self.provider = os.getenv("ANIMA_LLM_PROVIDER", "auto").strip().lower()
         self._groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-        requested_provider = os.getenv("ANIMA_LLM_PROVIDER", "auto").strip().lower()
-        ollama_available = self._detect_ollama()
-        mistral_available = bool(os.getenv("MISTRAL_API_KEY"))
-        groq_available = bool(os.getenv("GROQ_API_KEY"))
-
-        if requested_provider == "groq" and groq_available:
-            self.provider = "groq"
-        elif requested_provider == "mistral" and mistral_available:
-            self.provider = "mistral"
-        elif requested_provider == "ollama" and ollama_available:
-            self.provider = "ollama"
-        elif requested_provider == "auto":
-            if groq_available:
-                self.provider = "groq"
-            elif mistral_available:
-                self.provider = "mistral"
-            else:
-                self.provider = "ollama" if ollama_available else "none"
-        elif requested_provider == "groq":
-            self.provider = "mistral" if mistral_available else (
-                "ollama" if ollama_available else "none"
-            )
-        elif requested_provider == "mistral":
-            self.provider = "ollama" if ollama_available else "none"
-        else:
-            self.provider = "ollama" if ollama_available else "none"
-
-        model = {
-            "groq": self._groq_model,
-            "mistral": self._mistral_model,
-            "ollama": self._ollama_model,
-        }.get(self.provider)
-        print(f"🧠 [EVOLVER] Провайдер: {self.provider}"
-              + (f" ({model})" if model else ""))
-
-    def _detect_ollama(self) -> bool:
-        """Проверяет, что локальный сервер Ollama жив, и выбирает модель."""
-        try:
-            req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            available = {m["name"].split(":")[0] for m in data.get("models", [])}
-            for preferred in self.OLLAMA_MODEL_PREFERENCE:
-                if preferred in available:
-                    self._ollama_model = preferred
-                    return True
-            # Если ничего из списка предпочтений не найдено, берём первую попавшуюся
-            if available:
-                self._ollama_model = next(iter(available))
-                return True
-            return False
-        except Exception:
-            return False
+        self._mistral_model = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
+        self._ollama_model = None
+        if self.provider == "auto":
+            self.provider = "groq" if os.getenv("GROQ_API_KEY") else "ollama"
+        if self.provider == "ollama":
+            self._ollama_model = DialogueEngine._detect_ollama_model()
+        print(f"🧠 [EVOLVER] Провайдер: {self.provider}; изменения поведения с проверкой опытом")
 
     def tick(self):
-        if self._busy:
-            return
+        development = self.agent.development
+        development.maintain()
         with self.agent.lock:
-            cortisol    = self.agent.blood["cortisol"]
-            skill_count = len(self.agent.upgraded_skills)
-
-        if cortisol > 0.4 and skill_count < 5:
+            self.agent.genome.genes = development.runtime()["genes"]
+        if (not self._busy and self.agent.is_running and self.agent.world_state.get("connected")
+                and development.ready()):
             self._busy = True
             threading.Thread(target=self._evolve_worker, daemon=True).start()
 
     def _evolve_worker(self):
         try:
-            self._trigger_upgrade()
+            development = self.agent.development
+            # This also reserves the persisted cooldown before any network call.
+            fallback = development.local_proposal()
+            prompt = (
+                "Предложи одно проверяемое изменение поведения Aya в Luanti. "
+                "Ответ строго JSON: {name: строка, reason: строка, changes: объект}. "
+                "Разрешён ровно один раздел changes: body, gathering, construction, "
+                "modules или genes. Не пиши Python, код, команды или изменения гормонов. "
+                "body: walk_speed 1.1..1.7, jump_cooldown 0.8..1.5. "
+                "gathering: prefer_memory bool. "
+                "construction: half_size 2 или 3, wall_height 3 или 4, "
+                "door north/south/east/west. "
+                "modules: перестановка resource_memory, learned_actions, construction, exploration. "
+                "genes: небольшое изменение существующего гена, максимум 0.03 за пробу. "
+                "Не обещай успех: гипотеза будет проверяться игровыми результатами. "
+                "Пример: {\"name\":\"careful_walk\",\"reason\":\"проверить обход препятствий\","
+                "\"changes\":{\"body\":{\"walk_speed\":1.3}}}. "
+                "Текущая версия и опыт: "
+                + json.dumps({"policy": development.runtime(), "experience": development.summary()}, ensure_ascii=False)
+            )
+            raw = self._query_llm(prompt)
+            if not self.agent.is_running:
+                return
+            accepted = self._assimilate(raw) if raw else False
+            if not accepted:
+                ok, reason = development.propose(fallback, source="local_experiment")
+                print(f"[EVOLUTION] Локальная гипотеза: {reason}")
         finally:
             self._busy = False
 
-    def _trigger_upgrade(self):
-        agent = self.agent
-        print(f"\n📡 [{agent.name}] Кризис (кортизол: {agent.blood['cortisol']:.2f}). Запрос патча...")
-
-        # Просим модель вернуть СТРОГИЙ JSON: {"name": ..., "code": ...}
-        # Имя выбирает модель свободно — whitelist проверяет его ФОРМУ, а не
-        # сверяет с фиксированным списком.
-        prompt = (
-            f"You are an evolutionary code subroutine for a sovereign AI agent named '{agent.name}'. "
-            f"Current biochemical state: {agent.blood}. "
-            f"IMPORTANT STRUCTURE NOTE: 'agent' is an OBJECT, not a dict. "
-            f"Blood chemicals live in agent.blood, which IS a dict. "
-            f"Correct access looks EXACTLY like this: agent.blood['cortisol'] = 0.1 — "
-            f"never agent['cortisol'], never agent.cortisol. "
-            f"Design a small Python function that takes 'agent' as its only argument and "
-            f"optimizes its blood levels (lower agent.blood['cortisol'], balance "
-            f"agent.blood['dopamine'], agent.blood['serotonin'], agent.blood['oxytocin']), "
-            f"then appends a short message to agent.evolution_log (a list — use .append()). "
-            f"Choose a descriptive snake_case function name yourself. "
-            f"CRITICAL JSON FORMATTING RULE: the 'code' value must be a SINGLE-LINE JSON "
-            f"string — every newline inside the Python code MUST be written as the two "
-            f'characters backslash-n (\\\\n), never as an actual line break. '
-            f'Respond with STRICT JSON only, no markdown, in this exact shape: '
-            f'{{"name": "your_function_name", "code": "def your_function_name(agent):\\n    ..."}}'
-        )
-
-        raw = self._query_llm(prompt)
-        if raw:
-            self._assimilate(raw)
-
-    def _query_llm(self, prompt: str) -> str | None:
-        if self.provider == "groq":
-            raw = _query_groq_chat(
-                [{"role": "user", "content": prompt}],
-                model=self._groq_model,
-                temperature=0.7,
-                max_tokens=600,
-                timeout=90,
-                reasoning_effort="low",
-                include_reasoning=False,
+    def _query_llm(self, prompt):
+        if self.provider == "groq" and os.getenv("GROQ_API_KEY"):
+            return _query_groq_chat(
+                [{"role": "user", "content": prompt}], model=self._groq_model,
+                temperature=0.3, max_tokens=500, timeout=45,
+                reasoning_effort="low", include_reasoning=False,
                 response_format={"type": "json_object"},
             )
-            if raw:
-                return self._strip_markdown_fence(raw)
-            if self._ollama_model:
-                print("🌐 [EVOLVER] Groq недоступен → переход к Ollama.")
-                return self._query_ollama(prompt)
-            return self._get_fallback_patch()
-        if self.provider == "mistral":
-            raw = _query_mistral_chat(
-                [{"role": "user", "content": prompt}],
-                model=self._mistral_model,
-                temperature=0.7,
-                max_tokens=220,
-                timeout=120,
+        if self.provider == "mistral" and os.getenv("MISTRAL_API_KEY"):
+            return _query_mistral_chat(
+                [{"role": "user", "content": prompt}], model=self._mistral_model,
+                temperature=0.3, max_tokens=500, timeout=45,
             )
-            if raw:
-                return self._strip_markdown_fence(raw)
-            if self._ollama_model:
-                print("🌐 [EVOLVER] Mistral недоступен → переход к Ollama.")
-                return self._query_ollama(prompt)
-            return self._get_fallback_patch()
-        if self.provider == "ollama":
-            return self._query_ollama(prompt)
-        print("🌐 [EVOLVER] Облачный и локальный провайдеры недоступны → автономный режим.")
-        return self._get_fallback_patch()
+        if self.provider == "ollama" and self._ollama_model:
+            try:
+                request = urllib.request.Request(
+                    "http://localhost:11434/api/generate",
+                    data=json.dumps({"model": self._ollama_model, "prompt": prompt,
+                                     "stream": False, "format": "json"}).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(request, timeout=45) as response:
+                    return json.load(response).get("response")
+            except (OSError, ValueError) as exc:
+                print(f"[EVOLUTION] Локальный ИИ недоступен: {exc}")
+        return None
 
-    def _query_ollama(self, prompt: str) -> str | None:
-        """Локальный запрос к Ollama — без ключей, без сети, без оплаты."""
-        payload = {
-            "model": self._ollama_model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.7,
-                "num_predict": 220,  # короткий ответ → заметно быстрее на CPU
-            },
-        }
+    def _assimilate(self, raw):
         try:
-            req = urllib.request.Request(
-                self.OLLAMA_URL,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            # CPU-инференс на слабом железе может быть очень медленным —
-            # даём до 4 минут, чтобы не падать в fallback раньше времени.
-            with urllib.request.urlopen(req, timeout=240) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-
-            text = data.get("response", "")
-            return self._strip_markdown_fence(text)
-
-        except Exception as exc:
-            print(f"❌ [EVOLVER OLLAMA ERROR] {exc}")
-            return self._get_fallback_patch()
-
-    @staticmethod
-    def _strip_markdown_fence(text: str) -> str:
-        """Снимает ```json ... ``` обёртку, если модель её всё же добавила."""
-        fence = chr(96) * 3
-        text = text.strip()
-        if text.startswith(fence):
-            text = text.strip(fence)
-            text = text.replace("json", "", 1).strip()
-        return text
-
-    def _get_fallback_patch(self) -> str:
-        """Возвращает тот же JSON-формат, что и реальный LLM-ответ."""
-        return json.dumps({
-            "name": "autonomous_homeostasis",
-            "code": (
-                "def autonomous_homeostasis(agent):\n"
-                "    agent.blood['cortisol'] = max(0.0, agent.blood['cortisol'] - 0.40)\n"
-                "    agent.blood['serotonin'] = min(1.0, agent.blood['serotonin'] + 0.18)\n"
-                "    agent.blood['dopamine'] = min(1.0, agent.blood['dopamine'] + 0.12)\n"
-                "    agent.evolution_log.append('Автономный патч: гомеостаз восстановлен.')\n"
-                "    print('✨ [EMERGENCY] Локальный патч активирован.')\n"
-            ),
-        })
-
-    @staticmethod
-    def _parse_name_and_code(raw: str) -> tuple[str | None, str | None]:
-        """
-        Пытается извлечь {"name": ..., "code": ...} из ответа модели.
-
-        Уровень 1 — строгий json.loads: покрывает случай, когда модель
-        аккуратно эскейпит переводы строк внутри "code".
-
-        Уровень 2 — терпимый regex по полям "name"/"code": переживает
-        реальные переводы строк и неэскейпленные кавычки внутри JSON-формы,
-        которую модель не до конца соблюла.
-
-        Уровень 3 — запасной разбор для слабых локальных моделей, которые
-        вообще игнорируют просьбу про JSON и просто возвращают обычный
-        Python-код (возможно в ```python ... ``` блоке). В этом случае
-        имя функции вытаскивается прямо из `def name(...)`, а код — это
-        весь найденный блок def.
-        """
-        # ── Уровень 1: строгий JSON ──
-        try:
-            payload = json.loads(raw)
-            return payload.get("name"), payload.get("code")
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        # ── Уровень 2: терпимый JSON-подобный разбор ──
-        name_match = re.search(r'"name"\s*:\s*"([^"]+)"', raw)
-        name = name_match.group(1) if name_match else None
-
-        code_match = re.search(r'"code"\s*:\s*"(.*)"\s*\}\s*$', raw, re.DOTALL)
-        if name and code_match:
-            code = code_match.group(1)
-            code = code.replace("\\n", "\n").replace('\\"', '"')
-            return name, code
-
-        # ── Уровень 3: модель просто вернула def name(agent): ... ──
-        # Снимаем возможную markdown-обёртку.
-        fence = chr(96) * 3
-        stripped = raw.strip()
-        if stripped.startswith(fence):
-            stripped = stripped.strip(fence)
-            stripped = stripped.replace("python", "", 1).strip()
-
-        def_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", stripped)
-        if def_match:
-            fallback_name = def_match.group(1)
-            # Код — от начала def до конца строки/блока (всё, что осталось)
-            code_start = def_match.start()
-            fallback_code = stripped[code_start:].strip()
-            return fallback_name, fallback_code
-
-        return None, None
-
-    def _assimilate(self, raw_json: str):
-        # ── 1. Парсим JSON (с запасным терпимым разбором) ──
-        name, code = self._parse_name_and_code(raw_json)
-        if name is None or code is None:
-            print("❌ [EVOLVER] Не удалось извлечь {name, code} из ответа модели.")
-            preview = raw_json[:400] + ("..." if len(raw_json) > 400 else "")
-            print(f"📄 [EVOLVER RAW RESPONSE]\n{preview}\n")
-            return
-
-        # ── 2. Whitelist по форме имени ──
-        if not _validate_skill_name(name):
-            return
-
-        # Подчищаем частые артефакты слабых локальных моделей:
-        # 1) буквальные два символа "\n" вместо настоящего перевода строки
-        #    (часто остаются, если код пришёл через ветку-3 парсера, минуя
-        #    JSON-декодирование, которое такие escape-последовательности
-        #    обычно превращает в реальные \n само).
-        # 2) одиночный висячий "\" перед переводом строки — неудачная
-        #    попытка модели экранировать конец строки, ломающая парсер
-        #    с "unexpected character after line continuation character".
-        if "\\n" in code and "\n" not in code:
-            # Похоже что весь код на одной "логической" строке с
-            # буквенными \n — разворачиваем их в настоящие переводы строк.
-            code = code.replace("\\n", "\n").replace('\\"', '"')
-        code = re.sub(r"\\(?=\n)", "", code)
-        code = re.sub(r"\\$", "", code)
-
-        # ── 3. AST-валидация кода ──
-        if not _validate_code(code):
-            print("❌ [EVOLVER] Код не прошёл AST-валидацию.")
-            preview = code[:400] + ("..." if len(code) > 400 else "")
-            print(f"📄 [EVOLVER EXTRACTED CODE]\n{preview}\n")
-            return
-
-        # ── 4. Безопасное исполнение в изолированном namespace ──
-        isolated_builtins = SAFE_BUILTINS.copy()
-        isolated_builtins.update({"random": random, "time": time, "np": np})
-        local_scope: dict = {}
-        try:
-            exec(code, {"__builtins__": isolated_builtins}, local_scope)  # noqa: S102
-        except Exception as exc:
-            print(f"❌ [EVOLVER COMPILE] {exc}")
-            return
-
-        func = local_scope.get(name)
-        if not callable(func):
-            print(f"❌ [EVOLVER] Заявленное имя '{name}' не найдено среди скомпилированных функций.")
-            return
-
-        # ── 5. Встраивание ──
-        with self.agent.lock:
-            self.agent.upgraded_skills[name] = func
-            self.agent.evolution_log.append(f"Навык встроен: '{name}'.")
-        print(f"✅ [EVOLVER] Патч '{name}' прошёл все проверки и интегрирован.")
-        self.agent.execute_skill(name)
+            proposal = json.loads(raw)
+        except (TypeError, ValueError):
+            print("[EVOLUTION] Предложение отклонено: ожидался JSON.")
+            return False
+        ok, reason = self.agent.development.propose(proposal, source=self.provider)
+        print(f"[EVOLUTION] Предложение ИИ: {reason}")
+        return ok
 
 
 # =============================================================================
-#  ДВИЖОК ДИАЛОГА (отдельный от SafeEvolver — тот пишет код, этот говорит)
+#  ДИАЛОГ: язык, память, сенсоры и текущее внутреннее состояние
 # =============================================================================
 
 class DialogueEngine:
-    """
-    Превращает текст пользователя + текущую биохимию Аи в осмысленный
-    ответ от первого лица через локальную модель (Ollama).
-
-    Структура провайдера сделана по тому же принципу, что и в SafeEvolver:
-    сейчас единственный backend — Ollama, но respond() легко переключить
-    на облачный API (DeepSeek/Gemini/Claude) позже, не трогая вызывающий код
-    в AnimaAgent.chat() — там вызов остаётся одинаковым.
-    """
+    """Диалог через выбранный провайдер с биохимией, опытом и сенсорами Aya."""
 
     OLLAMA_URL = "http://localhost:11434/api/generate"
     MAX_HISTORY = 6  # сколько последних реплик помнить для контекста
@@ -1784,8 +1531,9 @@ class DialogueEngine:
             f"{knowledge_lines}. "
             f"Учи человека: не отвечай только 'я знаю' — объясняй мысль, "
             f"причину и простой пример. Если данных недостаточно, честно скажи "
-            f"'я не знаю точно' и отдели предположение от факта. Не называй "
-            f"неподтверждённую запись проверенной истиной. "
+            f"'я не знаю точно' и отдели предположение от факта. "
+            f"Если не хватает знания, попроси человека научить тебя. "
+            f"Не называй неподтверждённую запись проверенной истиной. "
             f"Сейчас ты {mood_hint} (dopamine={b['dopamine']:.2f}, "
             f"cortisol={b['cortisol']:.2f}, oxytocin={b['oxytocin']:.2f}, "
             f"trust={s['trust']:.2f}, empathy={s['empathy']:.2f}, "
@@ -1793,7 +1541,8 @@ class DialogueEngine:
             f"stress={s['stress']:.2f}). "
             f"Отвечай от первого лица, коротко (1-3 предложения), на русском, "
             f"в характере своего текущего настроения. Без markdown, без пояснений "
-            f"о том, что ты ИИ — просто живой ответ как персонаж.\n\n"
+            f"о внутреннем формате запроса. Не приписывай себе неиспытанные навыки; "
+            f"отличай намерение выполнить действие от подтверждённого результата.\n\n"
             f"{history_lines}\n"
             f"Человек: {user_text}\n"
             f"Ая:"
@@ -1887,23 +1636,23 @@ class GenomeEncoder:
     @staticmethod
     def save_to_disk(agent: AnimaAgent, filename: str = None) -> str:
         if not filename:
-            filename = f"vault/{agent.name}_gen{agent.generation}.json"
-        os.makedirs("vault", exist_ok=True)
+            filename = os.path.join(agent.memory_dir, f"{agent.name}_gen{agent.generation}.json")
+        agent.development.save()
         data = agent.personality_snapshot()
         data["timestamp"]       = time.time()
         data["timestamp_human"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
+        atomic_json(filename, data)
         print(f"\n💾 [VAULT] {agent.name} сохранён → {filename}")
         return filename
 
     @staticmethod
-    def load_from_disk(filename: str) -> AnimaAgent:
+    def load_from_disk(filename: str, start_background: bool = True) -> AnimaAgent:
         with open(filename, "r", encoding="utf-8") as f:
             data = json.load(f)
         genome = Genome(data["genome"])
         print(f"\n🧬 [RESURRECTION] {data['name']} | Gen {data['generation']} | {data.get('timestamp_human','?')}")
-        agent = AnimaAgent(name=data["name"], genome=genome, generation=data["generation"])
+        agent = AnimaAgent(name=data["name"], genome=genome, generation=data["generation"],
+                          memory_dir=os.path.dirname(os.path.abspath(filename)), start_background=False)
         agent.interaction_count = data.get("interactions", 0)
         agent.evolution_log     = data.get("evolution_log", ["Resurrected."])
         agent.social_state.update(data.get("social_state", {}))
@@ -1916,16 +1665,18 @@ class GenomeEncoder:
         agent.goal_state.update(data.get("goal_state", {}))
         with agent.lock:
             agent._refresh_motives_locked()
+        if start_background:
+            agent.start_background()
         return agent
 
     @staticmethod
-    def list_vault(vault_dir: str = "vault") -> list:
+    def list_vault(vault_dir: str = VAULT_DIR) -> list:
         if not os.path.exists(vault_dir):
             print("[VAULT] Пусто.")
             return []
         files = [
             f for f in os.listdir(vault_dir)
-            if f.endswith(".json") and not f.endswith("_learning.json")
+            if re.fullmatch(r".+_gen\d+\.json", f)
         ]
         print(f"\n📂 [VAULT] {len(files)} запись(ей):")
         for f in sorted(files):
