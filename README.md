@@ -86,89 +86,83 @@ Aya listens for eight seconds and passes the transcription through the same dial
 ## Memory and Private Data
 
 Files in `vault/` contain Aya's state and personal memory. They are intentionally excluded from Git and must remain local.
+## Experience-based development: Biochemistry remains a factor in motivations and reactions to events. The old Python patch that directly reset cortisol levels has been replaced by JSON-based behavioral change suggestions. Simply stating "I am tired" no longer removes fatigue; recovery occurs during rest, originating from the in-game body. Hunger remains a distinct game need. The following mechanisms have been implemented: - Genome: small experimental modifications to existing genes, plus the original genome and version history. Limits: max 0.03 change per trial and 0.10 deviation from the original value; the accepted version persists across sessions. - Memory: action preferences update based on outcomes, and known resource locations are tied to specific worlds. Depleted resources are marked as unavailable. Knowledge corrections preserve the original entry and source; a human assertion does not automatically become a verified fact. Chat example: `correct memory: apples underwater => apples on trees`. - Self-model: confirmed successes/failures, intentions, success predictions, and prediction errors. This is a computational model of self-observation; Subjective consciousness is not measured here. - Body model: results of jumps and routes, observed height of successful ascents, walking speed tests, and pauses between jumps. Body geometry, gravity, and appearance do not change automatically. - Foraging: returning to remembered resources, verifying their availability, choosing between memory and searching for the nearest tree, and accumulating experience from successful and unsuccessful attempts. - Construction: 5×5 and 7×7 houses, walls 3 or 4 blocks high, and four possible entrance directions. Required planks are calculated based on the plan. Before a house is deemed complete, the system checks for structural support, walls, a roof, an empty interior, an entrance, and an unobstructed space in front of the entrance. When a new design is selected, the dimensions of the previously built house are stored separately. - Behavioral program structure: the order of registered modules can be modified. Essential needs and the safety controller retain priority. The model does not overwrite arbitrary Python files; instead, the active behavioral scheme is modified. Each proposal is first verified against a separate copy of the state: checking for a valid layout, handling hunger/rest/danger scenarios, and reproducing recent contexts. This check does not simulate Luanti's physics engine. Then, a single trial version is permitted in the game. Comparison requires a minimum of 6 observed outcomes (2 for construction), followed by 8 new trial outcomes (3 for construction). A rollback occurs in the event of failure, lack of improvement, or insufficient data within 15 minutes (60 minutes for construction). Events must be those actually executed in the Lua version; merely accepting a command or receiving an AI response does not count as a completed action. Success is evaluated based on in-game outcomes; for houses, factors such as suitability, usable area, and block count are considered. The comparison is currently observational rather than proof of causal improvement, as different areas of the world may vary in complexity. A human can roll back the current trial or the last accepted version. Proposals are submitted no more than once every 5 minutes; without cloud AI, local variants are available for empirical testing. In-game: occur no more than once every 5 minutes; local options are available for verification, without relying on the cloud. In-game:
+3 134
+## Development through experience
 
-## Развитие через опыт
+Biochemistry remains a factor in motivations and reactions to events. The old Python patch request that directly cleared cortisol has been replaced by JSON-based proposals for behavioral changes. Simply voicing a phrase about fatigue no longer eliminates it; recovery through rest occurs as a post-event process within the game body. Hunger remains a distinct in-game need.
 
-Биохимия остаётся частью мотивов и реакции на события. Старый запрос Python-патча,
-напрямую сбрасывавшего кортизол, заменён предложениями изменений поведения в JSON.
-Озвучивание фразы об усталости само по себе больше не убирает усталость: восстановление
-при отдыхе происходит после события из игрового тела. Голод остаётся отдельной игровой потребностью.
+The following mechanisms have been implemented:
 
-Реализованы следующие механизмы:
+- Genome: small trial modifications to existing genes, plus the original genome and version history. 
+Maximum change of 0.03 per trial and 0.10 relative to the original value; the accepted version persists across sessions.
+- Memory: action preferences update based on results; known resource locations are tied to specific worlds. Depleted resources are marked as inaccessible. 
+Knowledge corrections preserve the original entry and source; a human assertion does not automatically become a verified fact. Chat example:
+`fix memory: apples underwater => apples on trees`.
+- Self-model: confirmed successes/failures, intention, success prediction, and prediction error. 
+This is a computational model of self-observation; subjective consciousness is not measured here.
+- Body model: results of jumps and routes, observed height of successful climbs,
+trials of walking speed and pauses between jumps. Body geometry, gravity, and appearance
+do not change automatically.
+- Foraging: returning to remembered resources, checking availability, choosing between
+memory and searching for the nearest tree, and accumulating experience from successful and failed attempts.
+- Construction: 5×5 and 7×7 houses, walls 3 or 4 blocks high, and four possible entrance directions. The required boards are calculated based on the plan. Before a house is deemed complete, the supports,
+walls, roof, interior space, entrance, and the open area in front of the entrance are checked.
+When selecting a new project, the dimensions of the already built house are saved separately.
+- Behavior program structure: the order of registered modules can change. 
+Essential needs and the game's safety controller retain priority. 
+The model does not overwrite arbitrary Python files; instead, the executable behavior scheme is modified.
 
-- Геном: пробные небольшие изменения существующих генов, исходный геном и история версий.
-  Максимум 0.03 за пробу и 0.10 от исходного значения; принятая версия сохраняется между запусками.
-- Память: предпочтения действий обновляются по результатам, известные места ресурсов
-  привязаны к конкретному миру. Исчезнувший ресурс помечается недоступным.
-  Исправления знаний сохраняют прежнюю запись и источник; человеческое утверждение не
-  становится автоматически проверенным фактом. Пример в чате:
-  `исправь память: яблоки под водой => яблоки на деревьях`.
-- Модель себя: подтверждённые успехи/неудачи, намерение, прогноз успеха и ошибка прогноза.
-  Это вычислительная модель самонаблюдения; субъективное сознание здесь не измеряется.
-- Модель тела: результаты прыжков и маршрутов, наблюдаемая высота успешного подъёма,
-  пробы скорости ходьбы и паузы между прыжками. Геометрия тела, гравитация и внешность
-  не меняются автоматически.
-- Добыча: возврат к запомненным ресурсам, проверка их наличия, выбор между памятью
-  и поиском ближайшего дерева, накопление опыта удачных и неудачных попыток.
-- Строительство: дома 5×5 и 7×7, стены высотой 3 или 4 блока, четыре направления входа.
-  Требуемые доски вычисляются по плану. Перед признанием дома готовым проверяются опора,
-  стены, крыша, пустое внутреннее пространство, вход и свободная клетка перед входом.
-  При выборе нового проекта размеры уже построенного дома сохраняются отдельно.
-- Структура программы поведения: порядок зарегистрированных модулей может изменяться.
-  Обязательные потребности и игровой контроллер безопасности сохраняют приоритет.
-  Произвольные Python-файлы модель не переписывает: изменяется исполняемая схема поведения.
+Each proposal is first verified against a separate copy of the state: checking for a valid layout,
+handling hunger/rest/danger scenarios, and replaying recent contexts. This verification
+does not simulate Luanti physics. Then, a single trial run is permitted in the game. Comparison
+requires a minimum of 6 observed outcomes (2 for construction), followed by 8 new trial outcomes
+(3 for construction). A rollback occurs in the event of pain, lack of improvement, or insufficient data
+within 15 minutes (60 minutes for construction). Events must correspond to the version actually
+implemented in Lua; merely accepting a command or receiving an AI response does not count as an executed action.
 
-Каждое предложение сначала проверяется на отдельной копии состояния: допустимая схема,
-сценарии голода/отдыха/опасности и воспроизведение недавних контекстов. Эта проверка
-не симулирует физику Luanti. Затем разрешается одна пробная версия в игре. Для сравнения
-нужны минимум 6 наблюдаемых исходов (2 для строительства), затем 8 новых исходов пробы
-(3 для строительства). При боли, отсутствии улучшения или нехватке данных за 15 минут
-(60 минут для строительства) происходит откат. Нужны события именно применённой в Lua
-версии: принятие команды или ответ ИИ не считаются выполненным действием.
+Success is evaluated based on in-game outcomes; for houses, suitability, usable
+floor area, and block count are taken into account. The comparison is currently observational
+rather than proof of causal improvement, as different areas of the world may vary in complexity.
+A human user can roll back the current trial or the last accepted version. Proposals are
+generated no more than once every 5 minutes; in the absence of cloud AI, local variants
+are available for empirical testing.
 
-Успешность оценивается по игровым исходам; для домов учитываются пригодность, полезная
-площадь и число блоков. Сравнение пока наблюдательное, а не доказательство причинного
-улучшения: разные участки мира могут иметь разную сложность. Человек может откатить
-текущую пробу или последнюю принятую версию. Предложения поступают не чаще раза в 5 минут;
-без облачного ИИ доступны локальные варианты для проверки опытом.
-
-В игре:
-
+In-game:
 ```text
 /anima_evolution status
 /anima_evolution rollback
 /anima_reflect
 /anima_build start
 ```
+The new memory file is located at `vault/Aya_development.json`, alongside the existing
+`Aya_learning.json` and `Aya_gen0.json`. Existing records and personality data are not reset.
+Default paths are bound to the project rather than the current terminal directory.
 
-Новая память находится в `vault/Aya_development.json` рядом с существующими
-`Aya_learning.json` и `Aya_gen0.json`. Существующие записи и личность не сбрасываются.
-Пути по умолчанию привязаны к проекту, а не к текущему каталогу терминала.
+After updating Python and Lua, restart the world and the bridge using `./run_aya_luanti.sh`.
+Commands, heartbeats, and the current behavior version are exchanged via the `runtime/`
+directory within the installed mod folder. This directory is accessible to both the host
+and the Flatpak environment; separate `/tmp` directories are no longer used for exchange.
+The directory is created by the Python bridge upon the first state publication. Lua does not
+call `minetest.mkdir` inside the mod folder, as such operations are prohibited by Luanti's
+security mechanisms, even for trusted mods. Reading files and heartbeats relies on the
+already authorized `secure.trusted_mods = anima_bridge` setting; disabling security is unnecessary.
+Access is requested in the main `init.lua` file and passed locally to `body.lua`,
+since Luanti does not grant access when requested from a secondary file.
+To perform a test run without automatically launching Python, you can set
+`anima_bridge_autostart = false` in the Luanti configuration.
+Lua source files from the repository should be copied over the installed mod's
+source files, preserving its `models/` and `textures/` directories.
 
-После обновления Python и Lua перезапустите мир и мост через `./run_aya_luanti.sh`.
-Команды, heartbeat и текущая версия поведения обмениваются через `runtime/`
-в каталоге установленного мода. Этот каталог доступен и хосту, и Flatpak;
-их отдельные каталоги `/tmp` для обмена больше не используются.
-Каталог создаёт Python-мост при первой публикации состояния. Lua не вызывает
-`minetest.mkdir` в папке мода: такая операция запрещена защитой Luanti даже для
-доверенного мода. Для чтения файлов и heartbeat используется уже разрешённый
-`secure.trusted_mods = anima_bridge`; отключать защиту не требуется.
-Доступ запрашивается в основном коде `init.lua` и передаётся локально в `body.lua`:
-Luanti не выдаёт его при запросе из вспомогательного файла.
-Для тестового запуска без автозапуска Python можно установить
-`anima_bridge_autostart = false` в конфигурации Luanti.
-Исходники Lua в репозитории следует копировать поверх исходников установленного
-мода, сохраняя его каталоги `models/` и `textures/`.
-
-Проверки без запуска игры, озвучивания и запросов к API:
+Checks performed without launching the game, audio output, or API requests:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Lua-проверки используют системную библиотеку Lua 5.3/5.2. Они проверяют все варианты
-плана и цикл работы адаптера на тестовом мире; реальные столкновения и анимация
-требуют отдельной проверки в Luanti.
+Lua ​​checks utilize the system's Lua 5.3/5.2 library. They verify all plan variants
+and the adapter's operation loop within a test world; actual collisions and
+animations require separate verification within Luanti.
 
 ## Status
 
